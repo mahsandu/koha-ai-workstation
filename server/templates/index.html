@@ -488,9 +488,12 @@
                         <thead>
                             <tr>
                                 <th>Task ID</th>
-                                <th>Barcode / Images</th>
+                                <th>Source</th>
                                 <th>Status</th>
-                                <th>Extracted Title</th>
+                                <th>Title</th>
+                                <th>Author</th>
+                                <th>DDC</th>
+                                <th>Subjects</th>
                             </tr>
                         </thead>
                         <tbody id="queue-body">
@@ -576,14 +579,27 @@
                 return;
             }
             
-            tbody.innerHTML = Object.entries(data.queue).map(([taskId, task]) => `
+            
+            tbody.innerHTML = Object.entries(data.queue).map(([taskId, task]) => {
+                let source = task.type === 'db_fix' ? `DB Fix (Biblio: ${task.biblionumber})` : `Upload (${task.images ? task.images.length : 0} imgs)`;
+                let title = task.result ? task.result.title : (task.title || '-');
+                let author = task.result ? task.result.author : (task.author || '-');
+                let ddc = task.result ? task.result.ddc : '-';
+                let subjects = task.result ? task.result.subjects : '-';
+                
+                return `
                 <tr>
                     <td style="font-size:0.8rem;">${taskId.substring(0,8)}...</td>
-                    <td>Barcode: ${task.barcode} (${task.images.length} imgs)</td>
+                    <td>${source}</td>
                     <td><span class="status-badge status-${task.status}">${task.status}</span></td>
-                    <td>${task.result ? task.result.title : '-'}</td>
+                    <td>${title}</td>
+                    <td>${author}</td>
+                    <td><span class="badge" style="background:#fef3c7; color:#d97706; padding: 2px 6px; border-radius: 4px;">${ddc}</span></td>
+                    <td><small style="color: #64748b;">${subjects}</small></td>
                 </tr>
-            `).join('');
+                `;
+            }).join('');
+
             
             if(Object.values(data.queue).some(t => t.status === 'processing' || t.status === 'pending')) {
                 setTimeout(fetchQueueStatus, 3000);
