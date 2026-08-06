@@ -19,15 +19,35 @@ IMAGE_DIR = '/var/www/koha_editor/images'
 if not os.path.exists(IMAGE_DIR):
     os.makedirs(IMAGE_DIR, exist_ok=True)
 
+
+CONFIG_PATH = '/var/www/koha_editor/config.json'
+DEFAULT_CONFIG = {
+    "db_host": "127.0.0.1",
+    "db_user": "koha_mfa",
+    "db_pass": "HdOd?^`UVa`c3^W~",
+    "db_name": "koha_mfa",
+    "items_per_page": 50
+}
+
+def load_config():
+    if not os.path.exists(CONFIG_PATH):
+        with open(CONFIG_PATH, 'w') as f:
+            json.dump(DEFAULT_CONFIG, f)
+        return DEFAULT_CONFIG
+    with open(CONFIG_PATH, 'r') as f:
+        return json.load(f)
+
 def get_db_connection():
+    config = load_config()
     return pymysql.connect(
-        host='127.0.0.1',
-        user='koha_mfa',
-        password='HdOd?^`UVa`c3^W~',
-        database='koha_mfa',
+        host=config.get('db_host', '127.0.0.1'),
+        user=config.get('db_user', 'koha_mfa'),
+        password=config.get('db_pass', 'HdOd?^`UVa`c3^W~'),
+        database=config.get('db_name', 'koha_mfa'),
         charset='utf8mb4',
         cursorclass=pymysql.cursors.DictCursor
     )
+
 
 def is_garbled(text):
     if not text: return False
@@ -240,21 +260,41 @@ def stats():
 @app.route('/api/records')
 @login_required
 def get_records():
+    config = load_config()
     page = int(request.args.get('page', 1))
-    limit = int(request.args.get('limit', 50))
+    limit = int(request.args.get('limit', config.get('items_per_page', 50)))
     filter_type = request.args.get('filter', 'all')
     issue_type = request.args.get('issue', None)
+    
+    q_keyword = request.args.get('q_keyword', '').strip()
+    q_subject = request.args.get('q_subject', '').strip()
+    q_barcode = request.args.get('q_barcode', '').strip()
+    q_callnumber = request.args.get('q_callnumber', '').strip()
     
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute("""
+            query = """
                 SELECT 
-                    b.biblionumber, i.barcode, b.title, b.author, bi.publishercode, bi.publicationyear, bi.pages
+                    b.biblionumber, i.barcode, i.itemcallnumber, b.title, b.author, bi.publishercode, bi.publicationyear, bi.pages
                 FROM koha_mfa.items i
                 LEFT JOIN koha_mfa.biblio b ON i.biblionumber = b.biblionumber
                 LEFT JOIN koha_mfa.biblioitems bi ON i.biblioitemnumber = bi.biblioitemnumber
-            """)
+                WHERE 1=1
+            """
+            params = []
+            
+            if q_keyword:
+                query += " AND (b.title LIKE %s OR b.author LIKE %s)"
+                params.extend([f"%{q_keyword}%", f"%{q_keyword}%"])
+            if q_barcode:
+                query += " AND i.barcode LIKE %s"
+                params.append(f"%{q_barcode}%")
+            if q_callnumber:
+                query += " AND i.itemcallnumber LIKE %s"
+                params.append(f"%{q_callnumber}%")
+                
+            cursor.execute(query, params)
             rows = cursor.fetchall()
             
             records = []
@@ -267,6 +307,7 @@ def get_records():
                 year = row['publicationyear'] or ''
                 pages = row['pages'] or ''
                 
+                # Basic issue checking
                 is_bad = False
                 reasons = []
                 if not title.strip(): reasons.append("Missing_Title")
@@ -279,16 +320,14 @@ def get_records():
                 if is_invalid_year(year): reasons.append("Invalid_Year"); is_bad = True
                 if not pages.strip(): reasons.append("Missing_Pages")
                 
-                if not title.strip() or not author.strip() or not pub.strip() or not str(year).strip():
-                    reasons.append("Missing_Data")
-                    is_bad = True
-                    
                 if filter_type == 'garbled' and not is_bad:
                     continue
-                    
                 if issue_type and issue_type != 'all' and issue_type not in reasons:
                     continue
                     
+                # NOTE: Subject search is complex (requires XML parsing or tags table), 
+                # so we will do it here in Python for now if requested.
+                
                 records.append({
                     "biblionumber": bib,
                     "barcode": barcode,
@@ -490,6 +529,98 @@ def check_duplicate_biblio():
     finally:
         conn.close()
 
+
+
+# --- ADMIN SETTINGS ---
+@app.route('/api/settings', methods=['GET', 'POST'])
+@login_required
+def manage_settings():
+    username = session['user']
+    conn = get_db_connection()
+    is_super = False
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT flags FROM koha_mfa.borrowers WHERE userid = %s", (username,))
+            u = cursor.fetchone()
+            if u and u['flags'] and int(u['flags']) % 2 == 1:
+                is_super = True
+    finally:
+        conn.close()
+        
+    if not is_super:
+        return jsonify({"error": "Superuser permission required"}), 403
+        
+    if request.method == 'GET':
+        return jsonify(load_config())
+        
+    if request.method == 'POST':
+        data = request.json
+        with open(CONFIG_PATH, 'w') as f:
+            json.dump(data, f)
+        return jsonify({"success": True})
+
+# --- LABEL TAGGING ---
+@app.route('/api/labels/batch', methods=['POST'])
+@login_required
+def create_label_batch():
+    data = request.json
+    start_bc = data.get('start')
+    end_bc = data.get('end')
+    
+    if not start_bc or not end_bc:
+        return jsonify({"error": "Missing barcode range"}), 400
+        
+    prefix = ""
+    for char in start_bc:
+        if not char.isdigit():
+            prefix += char
+        else:
+            break
+            
+    try:
+        s_num = int(start_bc.replace(prefix, ''))
+        e_num = int(end_bc.replace(prefix, ''))
+    except:
+        return jsonify({"error": "Invalid barcode format"}), 400
+        
+    target_barcodes = [f"{prefix}{i}" for i in range(s_num, e_num + 1)]
+    
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # Get itemnumbers for these barcodes
+            format_strings = ','.join(['%s'] * len(target_barcodes))
+            cursor.execute(f"SELECT itemnumber FROM koha_mfa.items WHERE barcode IN ({format_strings})", tuple(target_barcodes))
+            items = cursor.fetchall()
+            
+            if not items:
+                return jsonify({"error": "No matching items found"}), 404
+                
+            # Create a new batch in creator_batches
+            # Find next batch_id
+            cursor.execute("SELECT MAX(batch_id) as max_b FROM koha_mfa.creator_batches")
+            b_row = cursor.fetchone()
+            new_batch_id = (b_row['max_b'] or 0) + 1
+            
+            for item in items:
+                # Insert to creator_batches
+                cursor.execute("""
+                    INSERT INTO koha_mfa.creator_batches (batch_id, item_number, creator) 
+                    VALUES (%s, %s, 'labels')
+                """, (new_batch_id, item['itemnumber']))
+                
+                # Update itemnotes_nonpublic to mark as [TAGGED]
+                cursor.execute("SELECT itemnotes_nonpublic FROM koha_mfa.items WHERE itemnumber = %s", (item['itemnumber'],))
+                n_row = cursor.fetchone()
+                notes = n_row['itemnotes_nonpublic'] or ""
+                if "[TAGGED]" not in notes:
+                    new_notes = (notes + " [TAGGED]").strip()
+                    cursor.execute("UPDATE koha_mfa.items SET itemnotes_nonpublic = %s WHERE itemnumber = %s", (new_notes, item['itemnumber']))
+            
+            conn.commit()
+            return jsonify({"success": True, "batch_id": new_batch_id})
+    finally:
+        conn.close()
 
 # --- IMAGE UPLOADS ---
 @app.route('/api/upload', methods=['POST'])

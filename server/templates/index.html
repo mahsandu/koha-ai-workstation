@@ -5,7 +5,79 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sothik IT | Koha AI Workstation</title>
     <link href="https://fonts.googleapis.com/css2?family=Dosis:wght@400;600;700&display=swap" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js">
+        // --- NATIVE KOHA LABELS ---
+        async function printNativeKohaLabels() {
+            const start = document.getElementById('label-start').value;
+            const end = document.getElementById('label-end').value;
+            if(!start || !end) return alert("Need a barcode range!");
+            
+            const btn = event.target;
+            btn.textContent = "Processing...";
+            
+            const res = await fetch('/koha_editor/api/labels/batch', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({start: start, end: end})
+            });
+            const data = await res.json();
+            
+            if(data.error) {
+                alert(data.error);
+                btn.textContent = "Print via Native Koha & Tag";
+            } else {
+                alert(`Koha Label Batch #${data.batch_id} created successfully! Items have been marked as [TAGGED]. Redirecting you to Koha's print page...`);
+                // Redirect to Koha's label batch edit page so they can generate the PDF natively
+                window.open(`http://103.103.89.142:8080/cgi-bin/koha/labels/label-edit-batch.pl?op=edit&batch_id=${data.batch_id}`, '_blank');
+                btn.textContent = "Print via Native Koha & Tag";
+            }
+        }
+
+        // --- SETTINGS ---
+        async function loadSettings() {
+            const res = await fetch('/koha_editor/api/settings');
+            if(res.status === 403) {
+                document.getElementById('settings-error').textContent = "You do not have Superuser permissions to view or edit these settings.";
+                return;
+            }
+            const data = await res.json();
+            document.getElementById('cfg-host').value = data.db_host || '';
+            document.getElementById('cfg-user').value = data.db_user || '';
+            document.getElementById('cfg-pass').value = data.db_pass || '';
+            document.getElementById('cfg-name').value = data.db_name || '';
+            document.getElementById('cfg-ipp').value = data.items_per_page || 50;
+            document.getElementById('settings-error').textContent = "";
+        }
+        
+        async function saveSettings() {
+            const data = {
+                db_host: document.getElementById('cfg-host').value,
+                db_user: document.getElementById('cfg-user').value,
+                db_pass: document.getElementById('cfg-pass').value,
+                db_name: document.getElementById('cfg-name').value,
+                items_per_page: parseInt(document.getElementById('cfg-ipp').value)
+            };
+            const res = await fetch('/koha_editor/api/settings', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data)
+            });
+            if(res.status === 403) {
+                document.getElementById('settings-error').textContent = "Superuser permission denied.";
+                return;
+            }
+            const result = await res.json();
+            if(result.success) alert("Configuration saved securely!");
+        }
+        
+        // Load settings if opening tab
+        const originalSwitchTab = switchTab;
+        switchTab = function(tab) {
+            originalSwitchTab(tab);
+            if(tab === 'settings') loadSettings();
+        };
+
+    </script>
     <style>
         :root {
             --bg-color: #F7F6F2;
@@ -116,6 +188,7 @@
                 <div class="nav-tab" onclick="switchTab('browser')">Catalog Browser</div>
                 <div class="nav-tab" onclick="switchTab('labels')">Label Batch</div>
                 <div class="nav-tab" onclick="switchTab('queue')">Queue Monitor</div>
+                <div class="nav-tab" onclick="switchTab('settings')">Settings</div>
             </div>
         </h1>
         <div class="user-info">
@@ -144,6 +217,25 @@
         <div id="tab-browser" class="tab-content">
             <div class="stats-grid" id="stats-container">
                 <div class="stat-card"><h3>Loading...</h3></div>
+            </div>
+            
+            
+            <div style="background: white; padding: 15px; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 20px; display: flex; gap: 10px; align-items: flex-end;">
+                <div style="flex:1;">
+                    <label style="font-size:0.85rem; font-weight:bold; display:block; margin-bottom:4px;">Keyword (Title/Author)</label>
+                    <input type="text" id="search-keyword" style="width:100%;">
+                </div>
+                <div style="flex:1;">
+                    <label style="font-size:0.85rem; font-weight:bold; display:block; margin-bottom:4px;">Barcode</label>
+                    <input type="text" id="search-barcode" style="width:100%;">
+                </div>
+                <div style="flex:1;">
+                    <label style="font-size:0.85rem; font-weight:bold; display:block; margin-bottom:4px;">Call Number</label>
+                    <input type="text" id="search-callnumber" style="width:100%;">
+                </div>
+                <div>
+                    <button class="btn" onclick="currentPage=1; loadRecords()">Search</button>
+                </div>
             </div>
             
             <div style="margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
@@ -244,6 +336,7 @@
         <div id="tab-labels" class="tab-content">
             <div class="panel">
                 <h2>Batch Label Printing</h2>
+
                 <div style="display:flex; gap:10px; margin-bottom: 20px; align-items: flex-end;">
                     <div>
                         <label style="display:block; font-size:0.9rem; font-weight:600; margin-bottom:5px;">Start Barcode</label>
@@ -253,8 +346,8 @@
                         <label style="display:block; font-size:0.9rem; font-weight:600; margin-bottom:5px;">End Barcode</label>
                         <input type="text" id="label-end">
                     </div>
-                    <button class="btn" onclick="generateLabels()">Generate Labels</button>
-                    <button class="btn btn-outline" onclick="window.print()">Print Labels</button>
+                    <button class="btn" onclick="generateLabels()">Preview Labels</button>
+                    <button class="btn btn-outline" style="border-color: #059669; color: #059669;" onclick="printNativeKohaLabels()">Print via Native Koha & Tag</button>
                 </div>
                 
                 <div id="labels-print-area" class="labels-preview">
@@ -263,6 +356,38 @@
             </div>
         </div>
         
+        
+        <!-- SETTINGS -->
+        <div id="tab-settings" class="tab-content">
+            <div class="panel" style="max-width: 600px; margin: 0 auto;">
+                <h2>Global Configuration</h2>
+                <div id="settings-error" style="color:red; margin-bottom:15px; font-weight:bold;"></div>
+                
+                <div style="margin-bottom:15px;">
+                    <label style="display:block; font-weight:bold; margin-bottom:5px;">Database Host</label>
+                    <input type="text" id="cfg-host" style="width:100%;">
+                </div>
+                <div style="margin-bottom:15px;">
+                    <label style="display:block; font-weight:bold; margin-bottom:5px;">Database User</label>
+                    <input type="text" id="cfg-user" style="width:100%;">
+                </div>
+                <div style="margin-bottom:15px;">
+                    <label style="display:block; font-weight:bold; margin-bottom:5px;">Database Password</label>
+                    <input type="password" id="cfg-pass" style="width:100%;">
+                </div>
+                <div style="margin-bottom:15px;">
+                    <label style="display:block; font-weight:bold; margin-bottom:5px;">Database Name</label>
+                    <input type="text" id="cfg-name" style="width:100%;">
+                </div>
+                <div style="margin-bottom:20px;">
+                    <label style="display:block; font-weight:bold; margin-bottom:5px;">Items Per Page</label>
+                    <input type="number" id="cfg-ipp" style="width:100%;">
+                </div>
+                
+                <button class="btn" style="width:100%;" onclick="saveSettings()">Save Configuration</button>
+            </div>
+        </div>
+
         <!-- QUEUE MONITOR -->
         <div id="tab-queue" class="tab-content">
             <div class="panel">
@@ -390,10 +515,18 @@
             `;
         }
         function setFilter(issue) { let sel = document.getElementById('filter-select'); if(![...sel.options].some(o => o.value === issue)) sel.add(new Option(issue.replace('_', ' '), issue)); sel.value = issue; currentPage = 1; loadRecords(); }
+
         async function loadRecords() {
             const filter = document.getElementById('filter-select').value;
-            let query = `filter=${filter}`; if(filter !== 'all' && filter !== 'garbled') query = `issue=${filter}`; if(filter === 'garbled') query = `filter=garbled`;
-            const res = await fetch(`/koha_editor/api/records?page=${currentPage}&limit=50&${query}`); const data = await res.json();
+            const qk = document.getElementById('search-keyword').value;
+            const qb = document.getElementById('search-barcode').value;
+            const qc = document.getElementById('search-callnumber').value;
+            
+            let query = `filter=${filter}&q_keyword=${encodeURIComponent(qk)}&q_barcode=${encodeURIComponent(qb)}&q_callnumber=${encodeURIComponent(qc)}`; 
+            if(filter !== 'all' && filter !== 'garbled') query += `&issue=${filter}`;
+            
+            const res = await fetch(`/koha_editor/api/records?page=${currentPage}&limit=50&${query}`);
+ const data = await res.json();
             cachedRecords = data.data; document.getElementById('page-info').textContent = `Page ${data.page}`;
             const tbody = document.getElementById('records-body');
             if(data.data.length === 0) { tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;">No records found.</td></tr>`; return; }
@@ -565,6 +698,78 @@
                 JsBarcode(`#barcode-${bc}`, bc, { format: "CODE128", width: 1.5, height: 40, displayValue: false });
             }
         }
+    
+        // --- NATIVE KOHA LABELS ---
+        async function printNativeKohaLabels() {
+            const start = document.getElementById('label-start').value;
+            const end = document.getElementById('label-end').value;
+            if(!start || !end) return alert("Need a barcode range!");
+            
+            const btn = event.target;
+            btn.textContent = "Processing...";
+            
+            const res = await fetch('/koha_editor/api/labels/batch', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({start: start, end: end})
+            });
+            const data = await res.json();
+            
+            if(data.error) {
+                alert(data.error);
+                btn.textContent = "Print via Native Koha & Tag";
+            } else {
+                alert(`Koha Label Batch #${data.batch_id} created successfully! Items have been marked as [TAGGED]. Redirecting you to Koha's print page...`);
+                // Redirect to Koha's label batch edit page so they can generate the PDF natively
+                window.open(`http://103.103.89.142:8080/cgi-bin/koha/labels/label-edit-batch.pl?op=edit&batch_id=${data.batch_id}`, '_blank');
+                btn.textContent = "Print via Native Koha & Tag";
+            }
+        }
+
+        // --- SETTINGS ---
+        async function loadSettings() {
+            const res = await fetch('/koha_editor/api/settings');
+            if(res.status === 403) {
+                document.getElementById('settings-error').textContent = "You do not have Superuser permissions to view or edit these settings.";
+                return;
+            }
+            const data = await res.json();
+            document.getElementById('cfg-host').value = data.db_host || '';
+            document.getElementById('cfg-user').value = data.db_user || '';
+            document.getElementById('cfg-pass').value = data.db_pass || '';
+            document.getElementById('cfg-name').value = data.db_name || '';
+            document.getElementById('cfg-ipp').value = data.items_per_page || 50;
+            document.getElementById('settings-error').textContent = "";
+        }
+        
+        async function saveSettings() {
+            const data = {
+                db_host: document.getElementById('cfg-host').value,
+                db_user: document.getElementById('cfg-user').value,
+                db_pass: document.getElementById('cfg-pass').value,
+                db_name: document.getElementById('cfg-name').value,
+                items_per_page: parseInt(document.getElementById('cfg-ipp').value)
+            };
+            const res = await fetch('/koha_editor/api/settings', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data)
+            });
+            if(res.status === 403) {
+                document.getElementById('settings-error').textContent = "Superuser permission denied.";
+                return;
+            }
+            const result = await res.json();
+            if(result.success) alert("Configuration saved securely!");
+        }
+        
+        // Load settings if opening tab
+        const originalSwitchTab = switchTab;
+        switchTab = function(tab) {
+            originalSwitchTab(tab);
+            if(tab === 'settings') loadSettings();
+        };
+
     </script>
 </body>
 </html>
