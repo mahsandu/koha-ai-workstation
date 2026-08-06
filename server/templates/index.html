@@ -35,7 +35,40 @@
 
         // --- SETTINGS ---
         
+        
+        async function startFixerBatch(biblionumber = null) {
+            const status = document.getElementById('fixer-status');
+            if(status) status.textContent = "Starting...";
+            
+            const payload = biblionumber ? {biblionumber: biblionumber} : {};
+            const res = await fetch('/koha_editor/api/fixer/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if(data.success) {
+                if(status) status.textContent = `Batch Started: ${data.tasks_added} records queued!`;
+                alert(`Added ${data.tasks_added} broken records to the AI Queue. View progress in the Queue Monitor tab.`);
+            } else {
+                if(status) status.textContent = "Failed to start batch.";
+            }
+        }
+        
+        async function revertBiblio(biblionumber) {
+            if(!confirm(`Are you sure you want to revert Biblio #${biblionumber} to its previous state?`)) return;
+            const res = await fetch(`/koha_editor/api/fixer/revert/${biblionumber}`, {method: 'POST'});
+            const data = await res.json();
+            if(data.success) {
+                alert("Successfully reverted to previous version.");
+                loadRecords();
+            } else {
+                alert("Error: " + (data.error || "Failed to revert"));
+            }
+        }
+
         async function fetchLogs() {
+
             const box = document.getElementById('server-logs-box');
             box.value = "Fetching logs...";
             try {
@@ -425,8 +458,18 @@
                 
                 <button class="btn" style="width:100%; margin-bottom: 20px;" onclick="saveSettings()">Save Configuration</button>
                 
+                
+                <hr style="margin: 20px 0; border: 1px solid var(--border-color);">
+                <h2>Autonomous AI Fixer Batch</h2>
+                <p style="font-size:0.9rem; color:var(--text-light); margin-bottom:15px;">Automatically scan the catalog for missing/garbled data and use DeepSeek/OpenLibrary to fix it in the background.</p>
+                <div style="display:flex; gap:10px; align-items:center;">
+                    <button class="btn" style="flex:1;" onclick="startFixerBatch()">Start AI Fixer Batch</button>
+                    <span id="fixer-status" style="font-weight:bold; color:var(--primary);"></span>
+                </div>
+                
                 <hr style="margin: 20px 0; border: 1px solid var(--border-color);">
                 <h2>Server Logs (Live AI Activity)</h2>
+
                 <button class="btn btn-outline" style="width:100%; margin-bottom: 15px;" onclick="fetchLogs()">Refresh Logs</button>
                 <textarea id="server-logs-box" style="width:100%; height: 300px; background: #1e293b; color: #38bdf8; font-family: monospace; font-size: 0.85rem; padding: 10px; border-radius: 4px; border: none;" readonly>Click 'Refresh Logs' to load /var/www/koha_editor/app.log</textarea>
 
@@ -773,7 +816,40 @@
 
         // --- SETTINGS ---
         
+        
+        async function startFixerBatch(biblionumber = null) {
+            const status = document.getElementById('fixer-status');
+            if(status) status.textContent = "Starting...";
+            
+            const payload = biblionumber ? {biblionumber: biblionumber} : {};
+            const res = await fetch('/koha_editor/api/fixer/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if(data.success) {
+                if(status) status.textContent = `Batch Started: ${data.tasks_added} records queued!`;
+                alert(`Added ${data.tasks_added} broken records to the AI Queue. View progress in the Queue Monitor tab.`);
+            } else {
+                if(status) status.textContent = "Failed to start batch.";
+            }
+        }
+        
+        async function revertBiblio(biblionumber) {
+            if(!confirm(`Are you sure you want to revert Biblio #${biblionumber} to its previous state?`)) return;
+            const res = await fetch(`/koha_editor/api/fixer/revert/${biblionumber}`, {method: 'POST'});
+            const data = await res.json();
+            if(data.success) {
+                alert("Successfully reverted to previous version.");
+                loadRecords();
+            } else {
+                alert("Error: " + (data.error || "Failed to revert"));
+            }
+        }
+
         async function fetchLogs() {
+
             const box = document.getElementById('server-logs-box');
             box.value = "Fetching logs...";
             try {

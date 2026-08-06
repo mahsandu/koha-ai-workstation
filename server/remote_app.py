@@ -58,7 +58,29 @@ def get_db_connection():
     )
 
 
+
+def init_db():
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS koha_mfa.biblio_history (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    biblionumber INT NOT NULL,
+                    old_metadata LONGTEXT,
+                    changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            conn.commit()
+    except Exception as e:
+        logging.error(f"DB Init error: {e}")
+    finally:
+        conn.close()
+
+init_db()
+
 def is_garbled(text):
+
     if not text: return False
     if '\ufffd' in text or 'Ã' in text or 'Â' in text or 'â' in text:
         return True
@@ -541,7 +563,83 @@ def check_duplicate_biblio():
 
 
 
+
+@app.route('/api/fixer/start', methods=['POST'])
+@login_required
+def start_fixer_batch():
+    data = request.json
+    biblionumber = data.get('biblionumber') # Optional: if single
+    
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            if biblionumber:
+                cursor.execute('''
+                    SELECT b.biblionumber, b.title, b.author, bi.publishercode, bi.publicationyear 
+                    FROM koha_mfa.biblio b 
+                    LEFT JOIN koha_mfa.biblioitems bi ON b.biblionumber = bi.biblionumber 
+                    WHERE b.biblionumber = %s
+                ''', (biblionumber,))
+                rows = cursor.fetchall()
+            else:
+                # Find all with missing/garbled author, pub, year
+                cursor.execute('''
+                    SELECT b.biblionumber, b.title, b.author, bi.publishercode, bi.publicationyear 
+                    FROM koha_mfa.biblio b 
+                    LEFT JOIN koha_mfa.biblioitems bi ON b.biblionumber = bi.biblionumber 
+                    WHERE b.author IS NULL OR b.author = '' 
+                       OR bi.publishercode IS NULL OR bi.publishercode = ''
+                       OR bi.publicationyear IS NULL OR bi.publicationyear = ''
+                ''')
+                rows = cursor.fetchall()
+            
+            count = 0
+            for row in rows:
+                task_id = "FIX_" + str(uuid.uuid4())
+                AI_QUEUE[task_id] = {
+                    "status": "pending",
+                    "type": "db_fix",
+                    "biblionumber": row['biblionumber'],
+                    "title": row['title'],
+                    "author": row['author'],
+                    "images": [],
+                    "result": None
+                }
+                count += 1
+            return jsonify({"success": True, "tasks_added": count})
+    finally:
+        conn.close()
+
+@app.route('/api/fixer/revert/<biblionumber>', methods=['POST'])
+@login_required
+def revert_biblio(biblionumber):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT old_metadata FROM koha_mfa.biblio_history WHERE biblionumber = %s ORDER BY id DESC LIMIT 1", (biblionumber,))
+            row = cursor.fetchone()
+            if not row:
+                return jsonify({"error": "No history found for this record."}), 404
+                
+            old_xml = row['old_metadata']
+            fields = parse_marc_xml_to_json(old_xml)
+            flat_data = extract_flat_data_from_json(fields)
+            
+            cursor.execute("UPDATE koha_mfa.biblio SET title = %s, author = %s WHERE biblionumber = %s", 
+                           (flat_data['title'], flat_data['author'], biblionumber))
+            cursor.execute("UPDATE koha_mfa.biblioitems SET publishercode = %s, publicationyear = %s, pages = %s WHERE biblionumber = %s", 
+                           (flat_data['publishercode'], flat_data['publicationyear'], flat_data['pages'], biblionumber))
+            cursor.execute("UPDATE koha_mfa.biblio_metadata SET metadata = %s WHERE biblionumber = %s", (old_xml, biblionumber))
+            
+            # Delete the history entry so we can revert further back if needed
+            cursor.execute("DELETE FROM koha_mfa.biblio_history WHERE biblionumber = %s ORDER BY id DESC LIMIT 1", (biblionumber,))
+            conn.commit()
+            return jsonify({"success": True})
+    finally:
+        conn.close()
+
 # --- LOGS VIEWER ---
+
 @app.route('/api/logs')
 @login_required
 def view_logs():
@@ -720,6 +818,7 @@ def queue_status():
 
 
 # --- BACKGROUND AI WORKER ---
+
 def ai_worker_loop():
     while True:
         try:
@@ -728,35 +827,64 @@ def ai_worker_loop():
                     task['status'] = 'processing'
                     
                     try:
-                        # 1. Cloud OCR
-                        img_name = task['images'][0]
-                        img_path = os.path.join(IMAGE_DIR, img_name)
+                        raw_text = ""
+                        ai_json = {}
+                        is_db_fix = task.get('type') == 'db_fix'
                         
-                        with open(img_path, 'rb') as f:
-                            encoded_string = base64.b64encode(f.read()).decode('utf-8')
+                        if is_db_fix:
+                            # DB Fix Mode: We have Title, need to deduce the rest
+                            biblionumber = task.get('biblionumber')
+                            conn = get_db_connection()
+                            try:
+                                with conn.cursor() as cursor:
+                                    cursor.execute("SELECT metadata FROM koha_mfa.biblio_metadata WHERE biblionumber = %s", (biblionumber,))
+                                    row = cursor.fetchone()
+                                    old_metadata = row['metadata'] if row else ""
+                                    
+                                    # Fetch flat data to give context
+                                    cursor.execute('''
+                                        SELECT b.title, b.author, bi.publishercode, bi.publicationyear, bi.pages
+                                        FROM koha_mfa.biblio b 
+                                        LEFT JOIN koha_mfa.biblioitems bi ON b.biblionumber = bi.biblionumber 
+                                        WHERE b.biblionumber = %s
+                                    ''', (biblionumber,))
+                                    b_row = cursor.fetchone()
+                                    raw_text = f"Title: {b_row['title']}\nAuthor: {b_row['author']}\nPublisher: {b_row['publishercode']}"
+                            finally:
+                                conn.close()
+                                
+                        else:
+                            # OCR Mode
+                            img_name = task['images'][0]
+                            img_path = os.path.join(IMAGE_DIR, img_name)
                             
-                        ocr_payload = {
-                            'apikey': 'helloworld',
-                            'base64Image': 'data:image/jpeg;base64,' + encoded_string,
-                            'language': 'eng'
-                        }
-                        
-                        try:
-                            ocr_res = requests.post('https://api.ocr.space/parse/image', data=ocr_payload, timeout=15)
-                            ocr_data = ocr_res.json()
-                            raw_text = ""
-                            if not ocr_data.get('IsErroredOnProcessing'):
-                                for parsed in ocr_data.get('ParsedResults', []):
-                                    raw_text += parsed.get('ParsedText', '') + " "
-                        except Exception as e:
-                            raw_text = "FAILED TO EXTRACT TEXT: " + str(e)
+                            with open(img_path, 'rb') as f:
+                                encoded_string = base64.b64encode(f.read()).decode('utf-8')
+                                
+                            ocr_payload = {
+                                'apikey': 'helloworld',
+                                'base64Image': 'data:image/jpeg;base64,' + encoded_string,
+                                'language': 'eng'
+                            }
                             
-                        if not raw_text.strip():
-                            raw_text = "UNKNOWN TEXT"
+                            try:
+                                ocr_res = requests.post('https://api.ocr.space/parse/image', data=ocr_payload, timeout=15)
+                                ocr_data = ocr_res.json()
+                                if not ocr_data.get('IsErroredOnProcessing'):
+                                    for parsed in ocr_data.get('ParsedResults', []):
+                                        raw_text += parsed.get('ParsedText', '') + " "
+                            except Exception as e:
+                                raw_text = "FAILED TO EXTRACT TEXT: " + str(e)
+                                
+                            if not raw_text.strip():
+                                raw_text = "UNKNOWN TEXT"
+                                
+                        # Local vLLM/Ollama Extraction (DeepSeek-R1)
+                        if is_db_fix:
+                            prompt = f"Fix the missing catalog metadata for this book. Output strictly as JSON with keys: title, author, publishercode, publicationyear, isbn, ddc, subjects. Guess missing data (like author and DDC) based on the title. Do not include any other text.\n\nBook Info:\n{raw_text}"
+                        else:
+                            prompt = f"Extract metadata from the following OCR text of a book cover/title page. Output strictly as JSON with keys: title, author, publishercode, publicationyear, isbn, ddc, subjects.\nDo not include any other text.\n\nText:\n{raw_text}"
                             
-                        # 2. Local vLLM/Ollama Extraction (DeepSeek-R1)
-                        prompt = f"Extract metadata from the following OCR text of a book cover/title page. Output strictly as JSON with the following keys:\n- title: (string)\n- author: (string)\n- publishercode: (string)\n- publicationyear: (string)\n- isbn: (string, 10 or 13 digits if found, else empty)\n- ddc: (string, 3-digit Dewey Decimal notation based on the topic, e.g. 004)\n- subjects: (comma separated string of 2-3 main topics)\n\nDo not include any other text or explanation. Output only valid JSON.\nText:\n{raw_text}"
-                        
                         ollama_payload = {
                             "model": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
                             "messages": [{"role": "user", "content": prompt}],
@@ -764,26 +892,17 @@ def ai_worker_loop():
                         }
                         
                         try:
-                            # Try vLLM first
                             res = requests.post('http://localhost:8000/v1/chat/completions', json=ollama_payload, timeout=30)
                             ai_text = res.json()['choices'][0]['message']['content']
                         except:
                             try:
-                                # Fallback to Ollama if vLLM is down
-                                ollama_payload_fallback = {
-                                    "model": "qwen2.5",
-                                    "prompt": prompt,
-                                    "stream": False
-                                }
+                                ollama_payload_fallback = {"model": "qwen2.5", "prompt": prompt, "stream": False}
                                 res = requests.post('http://localhost:11434/api/generate', json=ollama_payload_fallback, timeout=30)
                                 ai_text = res.json().get('response', '')
                             except Exception as e:
                                 ai_text = '{"title": "AI Offline", "author": "Check Server"}'
                         
-                        # Clean DeepSeek think tags
                         ai_text = re.sub(r'<think>.*?</think>', '', ai_text, flags=re.DOTALL).strip()
-                        
-                        # Extract JSON
                         json_match = re.search(r'\{.*?\}', ai_text, flags=re.DOTALL)
                         if json_match:
                             try:
@@ -793,17 +912,16 @@ def ai_worker_loop():
                         else:
                             ai_json = {"title": "Extraction Failed", "author": "Failed"}
                             
-                        
-                        # 3. OpenLibrary Priority Check
+                        # OpenLibrary Priority Check
                         final_ddc = ai_json.get("ddc", "")
                         final_subjects = ai_json.get("subjects", "")
-                        
-                        # Try regex for ISBN just in case AI missed it
-                        isbn_match = re.search(r'(?:ISBN(?:-1[03])?:? )?(?=[0-9X]{10}$|(?=(?:[0-9]+[- ]){3})[- 0-9X]{13}$|97[89][0-9]{10}$|(?=(?:[0-9]+[- ]){4})[- 0-9]{17}$)(?:97[89][- ]?)?[0-9]{1,5}[- ]?[0-9]+[- ]?[0-9]+[- ]?[0-9X]', raw_text, re.IGNORECASE)
                         isbn_to_check = ai_json.get('isbn', '')
-                        if not isbn_to_check and isbn_match:
-                            isbn_to_check = re.sub(r'[^0-9X]', '', isbn_match.group(0).upper())
-                            
+                        
+                        if not is_db_fix:
+                            isbn_match = re.search(r'(?:ISBN(?:-1[03])?:? )?(?=[0-9X]{10}$|(?=(?:[0-9]+[- ]){3})[- 0-9X]{13}$|97[89][0-9]{10}$|(?=(?:[0-9]+[- ]){4})[- 0-9]{17}$)(?:97[89][- ]?)?[0-9]{1,5}[- ]?[0-9]+[- ]?[0-9]+[- ]?[0-9X]', raw_text, re.IGNORECASE)
+                            if not isbn_to_check and isbn_match:
+                                isbn_to_check = re.sub(r'[^0-9X]', '', isbn_match.group(0).upper())
+                                
                         if isbn_to_check:
                             try:
                                 ol_res = requests.get(f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn_to_check}&jscmd=data&format=json", timeout=10)
@@ -817,8 +935,8 @@ def ai_worker_loop():
                                         final_subjects = ", ".join([s['name'] for s in book_info["subjects"]][:3])
                             except:
                                 pass
-                            
-                        task['result'] = {
+                                
+                        result_data = {
                             "title": ai_json.get("title", ""),
                             "author": ai_json.get("author", ""),
                             "publishercode": ai_json.get("publishercode", ""),
@@ -828,19 +946,39 @@ def ai_worker_loop():
                             "subjects": final_subjects,
                             "raw_ocr": raw_text[:500] + "..."
                         }
-                        
+                            
+                        # AUTO UPDATE DB FOR DB_FIX
+                        if is_db_fix:
+                            conn = get_db_connection()
+                            try:
+                                with conn.cursor() as cursor:
+                                    # Backup old XML
+                                    cursor.execute("INSERT INTO koha_mfa.biblio_history (biblionumber, old_metadata) VALUES (%s, %s)", (biblionumber, old_metadata))
+                                    
+                                    new_title = result_data['title'] or b_row['title']
+                                    new_author = result_data['author'] or b_row['author']
+                                    new_pub = result_data['publishercode'] or b_row['publishercode']
+                                    new_year = result_data['publicationyear'] or b_row['publicationyear']
+                                    
+                                    cursor.execute("UPDATE koha_mfa.biblio SET title = %s, author = %s WHERE biblionumber = %s", 
+                                                   (new_title, new_author, biblionumber))
+                                    cursor.execute("UPDATE koha_mfa.biblioitems SET publishercode = %s, publicationyear = %s WHERE biblionumber = %s", 
+                                                   (new_pub, new_year, biblionumber))
+                                    conn.commit()
+                                    logging.info(f"Auto-fixed DB for biblionumber {biblionumber} and saved history.")
+                            except Exception as db_err:
+                                logging.error(f"Failed DB auto-fix: {db_err}")
+                            finally:
+                                conn.close()
+                                
+                        task['result'] = result_data
                         task['status'] = 'completed'
-                        logging.info(f"Task {task_id} completed successfully for image {img_name}. Title extracted: {ai_json.get('title')}")
-
+                        logging.info(f"Task {task_id} completed successfully.")
                         
-                        # (Optional) Auto-insert into DB logic could go here
-                        
-
                     except Exception as e:
                         task['status'] = 'error'
                         task['result'] = {"error": str(e)}
                         logging.error(f"Task {task_id} failed with error: {str(e)}")
-
         except Exception:
             pass
             
