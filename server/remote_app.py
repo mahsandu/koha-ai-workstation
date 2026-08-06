@@ -783,29 +783,6 @@ def get_image(filename):
     return send_from_directory(IMAGE_DIR, filename)
 
 # --- DISTRIBUTED AI QUEUE ---
-@app.route('/api/queue/poll', methods=['GET'])
-def queue_poll():
-    for task_id, task in AI_QUEUE.items():
-        if task['status'] == 'pending':
-            task['status'] = 'processing'
-            return jsonify({
-                "task_id": task_id,
-                "images": [f"http://{request.host}/koha_editor/images/{img}" for img in task['images']],
-                "barcode": task.get('barcode'),
-                "item_count": task.get('item_count')
-            })
-    return jsonify({"task_id": None})
-
-@app.route('/api/queue/result', methods=['POST'])
-def queue_result():
-    data = request.json
-    task_id = data.get('task_id')
-    if task_id in AI_QUEUE:
-        AI_QUEUE[task_id]['status'] = 'completed'
-        AI_QUEUE[task_id]['result'] = data.get('result')
-        return jsonify({"success": True})
-    return jsonify({"error": "Task not found"}), 404
-
 @app.route('/api/process_ai', methods=['POST'])
 @login_required
 def trigger_ai():
@@ -813,30 +790,54 @@ def trigger_ai():
     images = data.get('images', [])
     barcode = data.get('barcode', '')
     item_count = data.get('item_count', '')
+    import json
     
-    task_id = str(uuid.uuid4())
-    AI_QUEUE[task_id] = {
-        "status": "pending",
-        "images": images,
-        "barcode": barcode,
-        "item_count": item_count,
-        "result": None
-    }
+    task_id = "UP_" + str(uuid.uuid4())
+    sq_conn = sqlite3.connect(SQLITE_DB)
+    sq_c = sq_conn.cursor()
+    sq_c.execute("INSERT INTO ai_task_queue (task_id, type, status, title, images) VALUES (?, ?, ?, ?, ?)", 
+                 (task_id, 'upload', 'pending', barcode, json.dumps(images)))
+    sq_conn.commit()
+    sq_conn.close()
+    
     return jsonify({"task_id": task_id})
-
-@app.route('/api/process_ai/<task_id>', methods=['GET'])
-@login_required
-def check_ai(task_id):
-    if task_id in AI_QUEUE:
-        return jsonify(AI_QUEUE[task_id])
-    return jsonify({"error": "Not found"}), 404
 
 @app.route('/api/queue/status', methods=['GET'])
 @login_required
 def queue_status():
-    return jsonify({"queue": AI_QUEUE})
+    sq_conn = sqlite3.connect(SQLITE_DB)
+    sq_conn.row_factory = sqlite3.Row
+    sq_c = sq_conn.cursor()
+    sq_c.execute("SELECT * FROM ai_task_queue ORDER BY created_at DESC LIMIT 100")
+    rows = sq_c.fetchall()
+    sq_conn.close()
+    
+    import json
+    queue = {}
+    for r in rows:
+        result_data = json.loads(r['result_data']) if r['result_data'] else None
+        imgs = json.loads(r['images']) if r['images'] else []
+        queue[r['task_id']] = {
+            "status": r['status'],
+            "type": r['type'],
+            "biblionumber": r['biblionumber'],
+            "title": r['title'],
+            "author": r['author'],
+            "images": imgs,
+            "barcode": r['title'], 
+            "result": result_data
+        }
+    return jsonify({"queue": queue})
 
-
+@app.route('/api/queue/requeue/<task_id>', methods=['POST'])
+@login_required
+def requeue_task(task_id):
+    sq_conn = sqlite3.connect(SQLITE_DB)
+    sq_c = sq_conn.cursor()
+    sq_c.execute("UPDATE ai_task_queue SET status = 'pending', result_data = NULL WHERE task_id = ?", (task_id,))
+    sq_conn.commit()
+    sq_conn.close()
+    return jsonify({"success": True})
 
 # --- BACKGROUND AI WORKER ---
 
