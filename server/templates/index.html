@@ -39,8 +39,7 @@
         
         .upload-area { border: 2px dashed var(--primary); border-radius: 8px; padding: 30px; text-align: center; cursor: pointer; transition: background 0.2s; margin-bottom: 20px; }
         .upload-area:hover { background: #fdf4ff; }
-        .upload-area p { margin: 0; color: var(--text-light); font-weight: 600; }
-
+        
         .folder-list { max-height: 600px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; }
         .folder-card { border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; cursor: pointer; transition: border-color 0.2s; }
         .folder-card:hover, .folder-card.active { border-color: var(--primary); background: #fdf4ff; }
@@ -54,37 +53,22 @@
         
         .status-badge { display: inline-block; padding: 3px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; margin-top: 5px; }
         .status-pending { background: #f3f4f6; color: #4b5563; }
-        .status-processing { background: #fef3c7; color: #d97706; animation: pulse 1.5s infinite; }
+        .status-processing { background: #fef3c7; color: #d97706; }
         .status-ready { background: #d1fae5; color: #059669; }
 
-        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
-
-        /* Form / Button Styles */
-        .editor-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
         .btn { padding: 10px 20px; font-family: 'Dosis', sans-serif; font-size: 1rem; font-weight: 600; color: white; background: var(--primary); border: none; border-radius: 6px; cursor: pointer; transition: background 0.2s; }
         .btn:hover { background: var(--primary-hover); }
         .btn-outline { background: transparent; color: var(--primary); border: 2px solid var(--primary); }
         .btn-outline:hover { background: var(--primary); color: white; }
         .btn-small { padding: 6px 12px; font-size: 0.9rem; }
-
-        .editor-layout { display: grid; grid-template-columns: 1fr 1.5fr; gap: 30px; }
-        .preview-image img { width: 100%; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 10px;}
-        .image-nav { display: flex; gap: 10px; overflow-x: auto; }
-        .image-nav img { height: 80px; width: 60px; object-fit: cover; cursor: pointer; border: 2px solid transparent; border-radius: 4px; }
-        .image-nav img.selected { border-color: var(--primary); }
-        
-        .marc-form { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
-        .form-group { display: flex; flex-direction: column; gap: 5px; }
-        .form-group.full-width { grid-column: span 2; }
-        label { font-weight: 600; color: var(--text-light); font-size: 0.9rem; }
-        input, select, textarea { padding: 10px; font-family: inherit; font-size: 1rem; border: 1px solid var(--border-color); border-radius: 6px; outline: none; transition: border-color 0.2s; }
-        input:focus, textarea:focus { border-color: var(--primary); }
         
         /* Dashboard Stats */
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 25px; }
         .stat-card { background: white; padding: 20px; border-radius: 8px; border: 1px solid var(--border-color); box-shadow: 0 2px 4px rgba(0,0,0,0.02); text-align: center; }
         .stat-card h3 { margin: 0; color: var(--text-light); font-size: 1rem; }
         .stat-card .val { font-size: 2rem; font-weight: 700; color: var(--primary); margin-top: 5px; }
+        .issue-link { color: var(--text-main); text-decoration: none; cursor: pointer; transition: color 0.2s; }
+        .issue-link:hover { color: var(--primary); text-decoration: underline; }
 
         /* Data Table */
         .table-container { background: white; border-radius: 8px; border: 1px solid var(--border-color); overflow-x: auto; }
@@ -92,7 +76,21 @@
         th { background: #f9fafb; padding: 12px 15px; text-align: left; font-size: 0.9rem; color: var(--text-light); border-bottom: 2px solid var(--border-color); }
         td { padding: 12px 15px; border-bottom: 1px solid var(--border-color); font-size: 0.95rem; }
         tr:last-child td { border-bottom: none; }
-        .edit-input { width: 90%; padding: 6px; font-size: 0.9rem; }
+        
+        /* Full Page Editor */
+        .editor-container { max-width: 1000px; margin: 0 auto; background: white; border-radius: 12px; border: 1px solid var(--border-color); padding: 30px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); }
+        .editor-top-nav { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--border-color); padding-bottom: 15px; margin-bottom: 20px; }
+        .editor-title { font-size: 1.5rem; font-weight: 700; color: var(--primary); }
+        
+        .marc-field { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; padding: 10px; background: #f9fafb; border: 1px solid var(--border-color); border-radius: 6px; }
+        .marc-tag { width: 60px; padding: 8px; font-weight: bold; border: 1px solid #ddd; border-radius: 4px; text-align: center; }
+        .marc-ind { width: 30px; padding: 8px; text-align: center; border: 1px solid #ddd; border-radius: 4px; }
+        .marc-subfields { flex-grow: 1; display: flex; flex-direction: column; gap: 5px; }
+        .marc-subfield { display: flex; gap: 5px; align-items: center; }
+        .marc-sub-code { width: 40px; padding: 8px; text-align: center; font-weight: 600; border: 1px solid #ddd; border-radius: 4px; background: #e5e7eb; }
+        .marc-sub-value { flex-grow: 1; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: inherit; }
+        
+        .remove-btn { background: #fee2e2; color: #dc2626; border: 1px solid #fca5a5; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-weight: bold; }
         
     </style>
 </head>
@@ -122,68 +120,8 @@
                         <p>Click to Upload Folders</p>
                         <input type="file" id="folder-upload" webkitdirectory directory multiple style="display: none;" onchange="handleUpload(event)">
                     </div>
-                    
                     <button class="btn btn-outline" style="width: 100%; margin-bottom: 15px;" onclick="processAllPending()">Process All Missing AI</button>
-
                     <div class="folder-list" id="folder-list"></div>
-                </div>
-
-                <!-- Right Panel -->
-                <div class="panel" id="editor-panel" style="opacity: 0.5; pointer-events: none;">
-                    <div class="editor-header">
-                        <h2>MARC Catalog Editor</h2>
-                        <div>
-                            <button class="btn" id="btn-save-koha" onclick="saveToKoha()">Inject to Live Koha</button>
-                        </div>
-                    </div>
-
-                    <div class="editor-layout">
-                        <div class="preview-area">
-                            <div class="preview-image">
-                                <img id="preview-img" src="" alt="Select a folder">
-                            </div>
-                            <div class="image-nav" id="image-nav"></div>
-                        </div>
-                        
-                        <div class="marc-form">
-                            <div class="form-group full-width">
-                                <label>245$a - Title</label>
-                                <input type="text" id="marc-title">
-                            </div>
-                            <div class="form-group">
-                                <label>100$a - Author</label>
-                                <input type="text" id="marc-author">
-                            </div>
-                            <div class="form-group">
-                                <label>020$a - ISBN</label>
-                                <input type="text" id="marc-isbn">
-                            </div>
-                            <div class="form-group">
-                                <label>260$b - Publisher</label>
-                                <input type="text" id="marc-publisher">
-                            </div>
-                            <div class="form-group">
-                                <label>260$c - Year</label>
-                                <input type="text" id="marc-year">
-                            </div>
-                            <div class="form-group">
-                                <label>300$a - Pages</label>
-                                <input type="text" id="marc-pages">
-                            </div>
-                            <div class="form-group">
-                                <label>250$a - Edition</label>
-                                <input type="text" id="marc-edition">
-                            </div>
-                            <div class="form-group">
-                                <label>082$a - DDC Call Number</label>
-                                <input type="text" id="marc-ddc">
-                            </div>
-                            <div class="form-group full-width">
-                                <label>650$a - Subject Headings (Comma separated)</label>
-                                <input type="text" id="marc-subjects">
-                            </div>
-                        </div>
-                    </div>
                 </div>
             </div>
         </div>
@@ -196,10 +134,14 @@
             
             <div style="margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
                 <div>
-                    <label style="margin-right: 10px;">Filter View:</label>
-                    <select id="filter-select" onchange="loadRecords()" style="padding: 8px;">
+                    <label style="margin-right: 10px;">Issue Filter:</label>
+                    <select id="filter-select" onchange="currentPage=1; loadRecords()" style="padding: 8px;">
                         <option value="all">All Records</option>
-                        <option value="garbled">Incomplete / Garbled Only</option>
+                        <option value="garbled">Any Issue / Garbled</option>
+                        <option value="Missing_Title">Missing Title</option>
+                        <option value="Missing_Author">Missing Author</option>
+                        <option value="Missing_Year">Missing Year</option>
+                        <option value="Garbled_Title">Garbled Title</option>
                     </select>
                 </div>
                 <div>
@@ -231,6 +173,34 @@
             </div>
         </div>
         
+        <!-- FULL PAGE EDITOR TAB -->
+        <div id="tab-editor" class="tab-content">
+            <div class="editor-container">
+                <div class="editor-top-nav">
+                    <div>
+                        <button class="btn btn-outline" onclick="switchTab('browser')">← Back to Browser</button>
+                    </div>
+                    <div class="editor-title" id="editor-title">Editing Biblio #---</div>
+                    <div>
+                        <button class="btn btn-outline" onclick="loadNextRecord(-1)">← Prev</button>
+                        <button class="btn btn-outline" onclick="loadNextRecord(1)">Next →</button>
+                    </div>
+                </div>
+                
+                <div style="margin-bottom: 20px; display:flex; justify-content: space-between;">
+                    <h2 style="margin:0;">Dynamic MARC Editor</h2>
+                    <div>
+                        <button class="btn btn-outline" onclick="addMarcField()">+ Add Field</button>
+                        <button class="btn" id="btn-save-full" onclick="saveFullRecord()">Save Record</button>
+                    </div>
+                </div>
+                
+                <div id="marc-editor-fields">
+                    <!-- Dynamic fields will be rendered here -->
+                </div>
+            </div>
+        </div>
+        
     </div>
 
     <script>
@@ -239,7 +209,9 @@
             document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             
-            document.querySelector(`.nav-tab[onclick="switchTab('${tab}')"]`).classList.add('active');
+            const tabBtn = document.querySelector(`.nav-tab[onclick="switchTab('${tab}')"]`);
+            if(tabBtn) tabBtn.classList.add('active');
+            
             document.getElementById(`tab-${tab}`).classList.add('active');
             
             if(tab === 'browser' && document.getElementById('records-body').innerHTML.includes('Loading')) {
@@ -248,162 +220,54 @@
             }
         }
 
-        // --- AI BATCH LOGIC ---
-        let folders = {};
-        let folderKeys = [];
-        let currentIndex = -1;
-
-        async function handleUpload(event) {
-            const files = event.target.files;
-            for(let i=0; i<files.length; i++) {
-                const file = files[i];
-                if(file.type.startsWith('image/')) {
-                    const pathParts = file.webkitRelativePath.split('/');
-                    const folderName = pathParts.length > 1 ? pathParts[pathParts.length - 2] : "Unknown";
-                    
-                    if(!folders[folderName]) {
-                        folders[folderName] = {
-                            folderName: folderName,
-                            barcode: folderName.split(/[ -]/)[0] || '',
-                            itemCount: folderName.split(/[ -]/)[1] || '',
-                            images: [], status: 'pending', extractedData: null, taskId: null
-                        };
-                        folderKeys.push(folderName);
-                    }
-                    
-                    const formData = new FormData();
-                    formData.append('image', file);
-                    const res = await fetch('/koha_editor/api/upload', { method: 'POST', body: formData });
-                    const data = await res.json();
-                    if(data.success) { folders[folderName].images.push(data.filename); }
-                }
-            }
-            renderFolderList();
-        }
-
-        function renderFolderList() {
-            const list = document.getElementById('folder-list');
-            list.innerHTML = '';
-            folderKeys.forEach((key, index) => {
-                const folder = folders[key];
-                const div = document.createElement('div');
-                div.className = `folder-card ${index === currentIndex ? 'active' : ''}`;
-                
-                let badgeClass = 'status-pending'; let badgeText = 'Pending AI';
-                if(folder.status === 'processing') { badgeClass = 'status-processing'; badgeText = 'AI Thinking...'; }
-                if(folder.status === 'ready') { badgeClass = 'status-ready'; badgeText = 'Review Ready'; }
-                if(folder.status === 'saved') { badgeClass = 'status-ready'; badgeText = 'Saved to Koha ✓'; }
-                
-                div.innerHTML = `
-                    <div class="folder-header" onclick="selectFolder(${index})">${folder.folderName}</div>
-                    <div class="folder-inputs">
-                        <div><label>Barcode</label><input type="text" value="${folder.barcode}" onchange="folders['${key}'].barcode = this.value"></div>
-                        <div><label>Items</label><input type="text" value="${folder.itemCount}" onchange="folders['${key}'].itemCount = this.value"></div>
-                    </div>
-                    <div class="image-gallery" onclick="selectFolder(${index})">
-                        ${folder.images.map(img => `<img src="/koha_editor/images/${img}">`).join('')}
-                    </div>
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
-                        <span class="status-badge ${badgeClass}">${badgeText}</span>
-                        ${folder.status === 'pending' ? `<button class="btn btn-outline btn-small" onclick="processFolderAI(${index})">Process AI</button>` : ''}
-                    </div>
-                `;
-                list.appendChild(div);
-            });
-        }
-
-        function selectFolder(index) {
-            currentIndex = index; renderFolderList();
-            const folder = folders[folderKeys[index]];
-            
-            document.getElementById('image-nav').innerHTML = folder.images.map((img, i) => `
-                <img src="/koha_editor/images/${img}" class="${i===0 ? 'selected':''}" onclick="setMainImage(this, '${img}')">
-            `).join('');
-            
-            if(folder.images.length > 0) document.getElementById('preview-img').src = `/koha_editor/images/${folder.images[0]}`;
-            
-            document.getElementById('editor-panel').style.opacity = '1';
-            document.getElementById('editor-panel').style.pointerEvents = 'all';
-            
-            if(folder.extractedData) {
-                document.getElementById('marc-title').value = folder.extractedData.title || '';
-                document.getElementById('marc-author').value = folder.extractedData.author || '';
-            } else {
-                document.querySelectorAll('.marc-form input').forEach(i => i.value = '');
-            }
-        }
-
-        function setMainImage(el, imgName) {
-            document.querySelectorAll('#image-nav img').forEach(i => i.classList.remove('selected'));
-            el.classList.add('selected');
-            document.getElementById('preview-img').src = `/koha_editor/images/${imgName}`;
-        }
-
-        async function processFolderAI(index) {
-            const folder = folders[folderKeys[index]];
-            folder.status = 'processing'; renderFolderList();
-            
-            const res = await fetch('/koha_editor/api/process_ai', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ images: folder.images, barcode: folder.barcode, item_count: folder.itemCount })
-            });
-            const data = await res.json();
-            folder.taskId = data.task_id;
-            pollTask(index);
-        }
-
-        async function processAllPending() {
-            for(let i=0; i<folderKeys.length; i++) if(folders[folderKeys[i]].status === 'pending') await processFolderAI(i);
-        }
-
-        async function pollTask(index) {
-            const folder = folders[folderKeys[index]];
-            if(!folder.taskId) return;
-            const res = await fetch(`/koha_editor/api/process_ai/${folder.taskId}`);
-            const data = await res.json();
-            if(data.status === 'completed') {
-                folder.status = 'ready'; folder.extractedData = data.result;
-                if(currentIndex === index) selectFolder(index);
-                renderFolderList();
-            } else if (data.status === 'error') {
-                folder.status = 'pending'; alert('AI Processing failed.'); renderFolderList();
-            } else {
-                setTimeout(() => pollTask(index), 2000);
-            }
-        }
-
-        async function saveToKoha() {
-            if(currentIndex === -1) return;
-            const btn = document.getElementById('btn-save-koha'); btn.textContent = 'Saving...';
-            setTimeout(() => {
-                btn.textContent = 'Inject to Live Koha';
-                folders[folderKeys[currentIndex]].status = 'saved'; renderFolderList();
-                alert("Saved to Koha Successfully!");
-            }, 1000);
-        }
-
         // --- LIVE BROWSER LOGIC ---
         let currentPage = 1;
+        let cachedRecords = [];
+        let currentBiblioIndex = -1;
         
         async function loadStats() {
             const res = await fetch('/koha_editor/api/stats');
             const data = await res.json();
+            
+            const issuesHtml = Object.entries(data.issues)
+                .filter(x => x[1] > 0)
+                .sort((a,b) => b[1]-a[1])
+                .slice(0,4)
+                .map(x => `<div class="issue-link" onclick="setFilter('${x[0]}')">${x[0].replace('_', ' ')}: <b>${x[1]}</b></div>`)
+                .join('');
+                
             document.getElementById('stats-container').innerHTML = `
                 <div class="stat-card"><h3>Total Records</h3><div class="val">${data.total}</div></div>
                 <div class="stat-card"><h3>Clean Records</h3><div class="val" style="color:#059669">${data.complete}</div></div>
                 <div class="stat-card"><h3>Needs Attention</h3><div class="val" style="color:#d97706">${data.incomplete}</div></div>
                 <div class="stat-card" style="text-align:left; font-size: 0.85rem;">
-                    <h3 style="margin-bottom:5px;">Top Issues</h3>
-                    ${Object.entries(data.issues).filter(x => x[1] > 0).sort((a,b) => b[1]-a[1]).slice(0,3).map(x => `<div>${x[0]}: <b>${x[1]}</b></div>`).join('')}
+                    <h3 style="margin-bottom:5px;">Top Issues (Click to fix)</h3>
+                    ${issuesHtml}
                 </div>
             `;
+        }
+        
+        function setFilter(issue) {
+            let sel = document.getElementById('filter-select');
+            // ensure the option exists
+            if(![...sel.options].some(o => o.value === issue)) {
+                sel.add(new Option(issue.replace('_', ' '), issue));
+            }
+            sel.value = issue;
+            currentPage = 1;
+            loadRecords();
         }
 
         async function loadRecords() {
             const filter = document.getElementById('filter-select').value;
-            const res = await fetch(`/koha_editor/api/records?page=${currentPage}&limit=50&filter=${filter}`);
+            let query = `filter=${filter}`;
+            if(filter !== 'all' && filter !== 'garbled') query = `issue=${filter}`;
+            if(filter === 'garbled') query = `filter=garbled`;
+            
+            const res = await fetch(`/koha_editor/api/records?page=${currentPage}&limit=50&${query}`);
             const data = await res.json();
             
+            cachedRecords = data.data;
             document.getElementById('page-info').textContent = `Page ${data.page}`;
             const tbody = document.getElementById('records-body');
             
@@ -412,17 +276,17 @@
                 return;
             }
             
-            tbody.innerHTML = data.data.map(r => `
-                <tr id="row-${r.biblionumber}">
+            tbody.innerHTML = data.data.map((r, i) => `
+                <tr>
                     <td>${r.biblionumber}</td>
                     <td>${r.barcode}</td>
-                    <td><input type="text" class="edit-input" id="title-${r.biblionumber}" value="${r.title.replace(/"/g, '&quot;')}"></td>
-                    <td><input type="text" class="edit-input" id="author-${r.biblionumber}" value="${r.author.replace(/"/g, '&quot;')}"></td>
-                    <td><input type="text" class="edit-input" id="pub-${r.biblionumber}" value="${r.publishercode.replace(/"/g, '&quot;')}"></td>
-                    <td><input type="text" class="edit-input" id="year-${r.biblionumber}" value="${r.publicationyear.replace(/"/g, '&quot;')}"></td>
-                    <td><input type="text" class="edit-input" id="pages-${r.biblionumber}" value="${r.pages.replace(/"/g, '&quot;')}"></td>
+                    <td>${r.title}</td>
+                    <td>${r.author}</td>
+                    <td>${r.publishercode}</td>
+                    <td>${r.publicationyear}</td>
+                    <td>${r.pages}</td>
                     <td style="color:#dc2626; font-size:0.8rem; font-weight:600;">${r.issues}</td>
-                    <td><button class="btn btn-small" onclick="saveRecord(${r.biblionumber})">Save</button></td>
+                    <td><button class="btn btn-small" onclick="openFullEditor(${i})">Full Edit</button></td>
                 </tr>
             `).join('');
         }
@@ -430,28 +294,128 @@
         function prevPage() { if(currentPage > 1) { currentPage--; loadRecords(); } }
         function nextPage() { currentPage++; loadRecords(); }
 
-        async function saveRecord(biblionumber) {
-            const btn = document.querySelector(`#row-${biblionumber} button`);
-            btn.textContent = "...";
+        // --- FULL PAGE EDITOR LOGIC ---
+        let currentMarcFields = [];
+        
+        async function openFullEditor(index) {
+            currentBiblioIndex = index;
+            const biblio = cachedRecords[index];
+            document.getElementById('editor-title').textContent = `Editing Biblio #${biblio.biblionumber} (Barcode: ${biblio.barcode})`;
+            document.getElementById('marc-editor-fields').innerHTML = "Loading MARC XML...";
             
-            const payload = {
-                title: document.getElementById(`title-${biblionumber}`).value,
-                author: document.getElementById(`author-${biblionumber}`).value,
-                publishercode: document.getElementById(`pub-${biblionumber}`).value,
-                publicationyear: document.getElementById(`year-${biblionumber}`).value,
-                pages: document.getElementById(`pages-${biblionumber}`).value
-            };
+            switchTab('editor');
             
-            await fetch(`/koha_editor/api/records/${biblionumber}`, {
+            const res = await fetch(`/koha_editor/api/records/${biblio.biblionumber}/raw`);
+            const data = await res.json();
+            
+            currentMarcFields = data.fields || [];
+            renderMarcEditor();
+        }
+        
+        function loadNextRecord(offset) {
+            const nextIdx = currentBiblioIndex + offset;
+            if(nextIdx >= 0 && nextIdx < cachedRecords.length) {
+                openFullEditor(nextIdx);
+            } else {
+                alert("You reached the end of the current page list!");
+            }
+        }
+
+        function renderMarcEditor() {
+            const container = document.getElementById('marc-editor-fields');
+            container.innerHTML = '';
+            
+            currentMarcFields.forEach((field, fIdx) => {
+                const isControl = field.tag === 'LDR' || (parseInt(field.tag) < 10);
+                
+                let subfieldsHtml = '';
+                if(isControl) {
+                    subfieldsHtml = `<input type="text" class="marc-sub-value" value="${field.value || ''}" onchange="updateMarcValue(${fIdx}, null, this.value)">`;
+                } else {
+                    subfieldsHtml = (field.subfields || []).map((sf, sIdx) => `
+                        <div class="marc-subfield">
+                            <span style="color:var(--primary); font-weight:bold;">$</span>
+                            <input type="text" class="marc-sub-code" value="${sf.code}" onchange="updateMarcCode(${fIdx}, ${sIdx}, this.value)" maxlength="1">
+                            <input type="text" class="marc-sub-value" value="${sf.value.replace(/"/g, '&quot;')}" onchange="updateMarcValue(${fIdx}, ${sIdx}, this.value)">
+                            <button class="remove-btn" onclick="removeSubfield(${fIdx}, ${sIdx})" title="Remove Subfield">×</button>
+                        </div>
+                    `).join('');
+                    subfieldsHtml += `<button class="btn btn-outline btn-small" style="align-self:flex-start; margin-top:5px;" onclick="addSubfield(${fIdx})">+ Subfield</button>`;
+                }
+                
+                const div = document.createElement('div');
+                div.className = 'marc-field';
+                div.innerHTML = `
+                    <div>
+                        <button class="remove-btn" onclick="removeField(${fIdx})" title="Remove Entire Field">×</button>
+                    </div>
+                    <input type="text" class="marc-tag" value="${field.tag}" onchange="updateMarcTag(${fIdx}, this.value)">
+                    ${!isControl ? `
+                        <input type="text" class="marc-ind" value="${field.ind1}" onchange="updateMarcInd(${fIdx}, 1, this.value)" maxlength="1" title="Indicator 1">
+                        <input type="text" class="marc-ind" value="${field.ind2}" onchange="updateMarcInd(${fIdx}, 2, this.value)" maxlength="1" title="Indicator 2">
+                    ` : ''}
+                    <div class="marc-subfields">
+                        ${subfieldsHtml}
+                    </div>
+                `;
+                container.appendChild(div);
+            });
+        }
+        
+        function updateMarcTag(fIdx, val) { currentMarcFields[fIdx].tag = val; }
+        function updateMarcInd(fIdx, indNum, val) { currentMarcFields[fIdx][`ind${indNum}`] = val; }
+        function updateMarcCode(fIdx, sIdx, val) { currentMarcFields[fIdx].subfields[sIdx].code = val; }
+        function updateMarcValue(fIdx, sIdx, val) { 
+            if(sIdx === null) currentMarcFields[fIdx].value = val;
+            else currentMarcFields[fIdx].subfields[sIdx].value = val; 
+        }
+        
+        function addMarcField() {
+            currentMarcFields.push({ tag: '500', ind1: ' ', ind2: ' ', subfields: [{code: 'a', value: ''}] });
+            renderMarcEditor();
+        }
+        function addSubfield(fIdx) {
+            currentMarcFields[fIdx].subfields.push({code: 'a', value: ''});
+            renderMarcEditor();
+        }
+        function removeField(fIdx) {
+            if(confirm("Delete this entire field?")) {
+                currentMarcFields.splice(fIdx, 1);
+                renderMarcEditor();
+            }
+        }
+        function removeSubfield(fIdx, sIdx) {
+            currentMarcFields[fIdx].subfields.splice(sIdx, 1);
+            renderMarcEditor();
+        }
+
+        async function saveFullRecord() {
+            const biblio = cachedRecords[currentBiblioIndex];
+            const btn = document.getElementById('btn-save-full');
+            btn.textContent = 'Saving...';
+            
+            const res = await fetch(`/koha_editor/api/records/${biblio.biblionumber}`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(payload)
+                body: JSON.stringify({ fields: currentMarcFields })
             });
             
-            btn.textContent = "Saved ✓";
-            btn.style.background = "#059669";
-            setTimeout(() => { btn.textContent = "Save"; btn.style.background = "var(--primary)"; }, 2000);
+            const data = await res.json();
+            if(data.success) {
+                btn.textContent = "Saved ✓";
+                btn.style.background = "#059669";
+                
+                // Refresh background data
+                loadStats();
+                loadRecords();
+                
+                setTimeout(() => { btn.textContent = "Save Record"; btn.style.background = "var(--primary)"; }, 2000);
+            } else {
+                alert("Error saving record.");
+                btn.textContent = "Save Record";
+            }
         }
+
     </script>
 </body>
 </html>

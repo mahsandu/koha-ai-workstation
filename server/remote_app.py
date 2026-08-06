@@ -42,39 +42,64 @@ def is_invalid_year(year):
         return True
     return False
 
-def update_marc_xml(xml_str, field, new_value):
+def parse_marc_xml_to_json(xml_str):
     try:
         root = ET.fromstring(xml_str)
-        tag_map = {
-            "title": ("245", "a"),
-            "author": ("100", "a"),
-            "publishercode": ("260", "b"),
-            "publicationyear": ("260", "c"),
-            "pages": ("300", "a")
-        }
-        tag, code = tag_map.get(field, (None, None))
-        if not tag: return xml_str
-        
-        datafield = None
-        for df in root.findall(f".//datafield[@tag='{tag}']"):
-            datafield = df
-            break
-            
-        if datafield is None:
-            datafield = ET.SubElement(root, "datafield", tag=tag, ind1=" ", ind2=" ")
-            
-        subfield = None
-        for sf in datafield.findall(f"./subfield[@code='{code}']"):
-            subfield = sf
-            break
-            
-        if subfield is None:
-            subfield = ET.SubElement(datafield, "subfield", code=code)
-            
-        subfield.text = new_value
-        return ET.tostring(root, encoding='utf-8', xml_declaration=False).decode('utf-8')
+        fields = []
+        for child in root:
+            if child.tag == 'leader':
+                fields.append({'tag': 'LDR', 'value': child.text})
+            elif child.tag == 'controlfield':
+                fields.append({'tag': child.attrib.get('tag', ''), 'value': child.text})
+            elif child.tag == 'datafield':
+                tag = child.attrib.get('tag', '')
+                ind1 = child.attrib.get('ind1', ' ')
+                ind2 = child.attrib.get('ind2', ' ')
+                subfields = []
+                for sf in child.findall('subfield'):
+                    subfields.append({'code': sf.attrib.get('code', ''), 'value': sf.text})
+                fields.append({'tag': tag, 'ind1': ind1, 'ind2': ind2, 'subfields': subfields})
+        return fields
     except Exception as e:
-        return xml_str
+        return []
+
+def build_marc_xml_from_json(fields):
+    root = ET.Element("record")
+    for f in fields:
+        tag = f.get('tag')
+        if not tag: continue
+        
+        if tag == 'LDR':
+            elem = ET.SubElement(root, "leader")
+            elem.text = f.get('value', '')
+        elif tag.isdigit() and int(tag) < 10: # Control fields 001-009
+            elem = ET.SubElement(root, "controlfield", tag=tag)
+            elem.text = f.get('value', '')
+        else:
+            elem = ET.SubElement(root, "datafield", tag=tag, ind1=f.get('ind1', ' '), ind2=f.get('ind2', ' '))
+            for sf in f.get('subfields', []):
+                selem = ET.SubElement(elem, "subfield", code=sf.get('code', ''))
+                selem.text = sf.get('value', '')
+    return ET.tostring(root, encoding='utf-8', xml_declaration=False).decode('utf-8')
+
+def extract_flat_data_from_json(fields):
+    """Extract flat values for SQL tables from JSON fields array"""
+    data = {"title": "", "author": "", "publishercode": "", "publicationyear": "", "pages": ""}
+    for f in fields:
+        if f.get('tag') == '245':
+            for sf in f.get('subfields', []):
+                if sf.get('code') == 'a': data["title"] = sf.get('value', '')
+        elif f.get('tag') == '100':
+            for sf in f.get('subfields', []):
+                if sf.get('code') == 'a': data["author"] = sf.get('value', '')
+        elif f.get('tag') == '260':
+            for sf in f.get('subfields', []):
+                if sf.get('code') == 'b': data["publishercode"] = sf.get('value', '')
+                elif sf.get('code') == 'c': data["publicationyear"] = sf.get('value', '')
+        elif f.get('tag') == '300':
+            for sf in f.get('subfields', []):
+                if sf.get('code') == 'a': data["pages"] = sf.get('value', '')
+    return data
 
 # --- AUTHENTICATION ---
 @app.route('/login', methods=['GET', 'POST'])
@@ -163,11 +188,11 @@ def stats():
             complete = 0
             incomplete = 0
             issues = {
-                "Missing Title": 0, "Garbled Title": 0,
-                "Missing Author": 0, "Garbled Author": 0,
-                "Missing Publisher": 0, "Garbled Publisher": 0,
-                "Missing Year": 0, "Invalid Year": 0,
-                "Missing Pages": 0
+                "Missing_Title": 0, "Garbled_Title": 0,
+                "Missing_Author": 0, "Garbled_Author": 0,
+                "Missing_Publisher": 0, "Garbled_Publisher": 0,
+                "Missing_Year": 0, "Invalid_Year": 0,
+                "Missing_Pages": 0, "Missing_Data": 0
             }
             
             for row in rows:
@@ -179,19 +204,22 @@ def stats():
                 pages = row['pages'] or ''
                 
                 row_issues = []
-                if not title.strip(): row_issues.append("Missing Title")
-                elif is_garbled(title): row_issues.append("Garbled Title")
+                if not title.strip(): row_issues.append("Missing_Title")
+                elif is_garbled(title): row_issues.append("Garbled_Title")
                 
-                if not author.strip(): row_issues.append("Missing Author")
-                elif is_garbled(author): row_issues.append("Garbled Author")
+                if not author.strip(): row_issues.append("Missing_Author")
+                elif is_garbled(author): row_issues.append("Garbled_Author")
                 
-                if not pub.strip(): row_issues.append("Missing Publisher")
-                elif is_garbled(pub): row_issues.append("Garbled Publisher")
+                if not pub.strip(): row_issues.append("Missing_Publisher")
+                elif is_garbled(pub): row_issues.append("Garbled_Publisher")
                 
-                if not str(year).strip(): row_issues.append("Missing Year")
-                elif is_invalid_year(year): row_issues.append("Invalid Year")
+                if not str(year).strip(): row_issues.append("Missing_Year")
+                elif is_invalid_year(year): row_issues.append("Invalid_Year")
                 
-                if not pages.strip(): row_issues.append("Missing Pages")
+                if not pages.strip(): row_issues.append("Missing_Pages")
+                
+                if not title.strip() or not author.strip() or not pub.strip() or not str(year).strip():
+                    row_issues.append("Missing_Data")
                 
                 if row_issues:
                     incomplete += 1
@@ -215,6 +243,7 @@ def get_records():
     page = int(request.args.get('page', 1))
     limit = int(request.args.get('limit', 50))
     filter_type = request.args.get('filter', 'all')
+    issue_type = request.args.get('issue', None)
     
     conn = get_db_connection()
     try:
@@ -240,14 +269,24 @@ def get_records():
                 
                 is_bad = False
                 reasons = []
-                if is_garbled(title): reasons.append("Garbled Title"); is_bad = True
-                if is_garbled(author): reasons.append("Garbled Author"); is_bad = True
-                if is_invalid_year(year): reasons.append("Invalid Year"); is_bad = True
+                if not title.strip(): reasons.append("Missing_Title")
+                if is_garbled(title): reasons.append("Garbled_Title"); is_bad = True
+                if not author.strip(): reasons.append("Missing_Author")
+                if is_garbled(author): reasons.append("Garbled_Author"); is_bad = True
+                if not pub.strip(): reasons.append("Missing_Publisher")
+                if is_garbled(pub): reasons.append("Garbled_Publisher"); is_bad = True
+                if not str(year).strip(): reasons.append("Missing_Year")
+                if is_invalid_year(year): reasons.append("Invalid_Year"); is_bad = True
+                if not pages.strip(): reasons.append("Missing_Pages")
+                
                 if not title.strip() or not author.strip() or not pub.strip() or not str(year).strip():
-                    reasons.append("Missing Data")
+                    reasons.append("Missing_Data")
                     is_bad = True
                     
                 if filter_type == 'garbled' and not is_bad:
+                    continue
+                    
+                if issue_type and issue_type != 'all' and issue_type not in reasons:
                     continue
                     
                 records.append({
@@ -258,7 +297,7 @@ def get_records():
                     "publishercode": pub,
                     "publicationyear": year,
                     "pages": pages,
-                    "issues": ", ".join(reasons)
+                    "issues": ", ".join([r.replace('_', ' ') for r in reasons])
                 })
                 
             start = (page - 1) * limit
@@ -271,31 +310,46 @@ def get_records():
     finally:
         conn.close()
 
+@app.route('/api/records/<biblionumber>/raw')
+@login_required
+def get_raw_record(biblionumber):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT metadata FROM koha_mfa.biblio_metadata WHERE biblionumber = %s", (biblionumber,))
+            row = cursor.fetchone()
+            if row and row['metadata']:
+                fields = parse_marc_xml_to_json(row['metadata'])
+                return jsonify({"biblionumber": biblionumber, "fields": fields})
+            return jsonify({"error": "No metadata found"}), 404
+    finally:
+        conn.close()
+
 @app.route('/api/records/<biblionumber>', methods=['POST'])
 @login_required
 def update_record(biblionumber):
     data = request.json
+    fields = data.get('fields', [])
+    
+    if not fields:
+        return jsonify({"error": "No fields provided"}), 400
+        
+    flat_data = extract_flat_data_from_json(fields)
+    new_xml = build_marc_xml_from_json(fields)
+    
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            # 1. Update SQL tables
-            if 'title' in data: cursor.execute("UPDATE koha_mfa.biblio SET title = %s WHERE biblionumber = %s", (data['title'], biblionumber))
-            if 'author' in data: cursor.execute("UPDATE koha_mfa.biblio SET author = %s WHERE biblionumber = %s", (data['author'], biblionumber))
-            if 'publishercode' in data: cursor.execute("UPDATE koha_mfa.biblioitems SET publishercode = %s WHERE biblionumber = %s", (data['publishercode'], biblionumber))
-            if 'publicationyear' in data: cursor.execute("UPDATE koha_mfa.biblioitems SET publicationyear = %s WHERE biblionumber = %s", (data['publicationyear'], biblionumber))
-            if 'pages' in data: cursor.execute("UPDATE koha_mfa.biblioitems SET pages = %s WHERE biblionumber = %s", (data['pages'], biblionumber))
+            # 1. Update SQL tables for fast searching
+            cursor.execute("UPDATE koha_mfa.biblio SET title = %s, author = %s WHERE biblionumber = %s", 
+                           (flat_data['title'], flat_data['author'], biblionumber))
+            
+            cursor.execute("UPDATE koha_mfa.biblioitems SET publishercode = %s, publicationyear = %s, pages = %s WHERE biblionumber = %s", 
+                           (flat_data['publishercode'], flat_data['publicationyear'], flat_data['pages'], biblionumber))
             
             # 2. Update MARC XML
-            cursor.execute("SELECT metadata FROM koha_mfa.biblio_metadata WHERE biblionumber = %s", (biblionumber,))
-            row = cursor.fetchone()
-            if row and row['metadata']:
-                current_xml = row['metadata']
-                for field, value in data.items():
-                    if field in ['title', 'author', 'publishercode', 'publicationyear', 'pages']:
-                        current_xml = update_marc_xml(current_xml, field, value)
-                
-                cursor.execute("UPDATE koha_mfa.biblio_metadata SET metadata = %s WHERE biblionumber = %s", (current_xml, biblionumber))
-                
+            cursor.execute("UPDATE koha_mfa.biblio_metadata SET metadata = %s WHERE biblionumber = %s", (new_xml, biblionumber))
+            
             conn.commit()
     finally:
         conn.close()
