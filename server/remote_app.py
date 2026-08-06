@@ -336,6 +336,10 @@ def get_records():
     q_barcode = request.args.get('q_barcode', '').strip()
     q_callnumber = request.args.get('q_callnumber', '').strip()
     
+    sort_by = request.args.get('sort', 'barcode')
+    sort_desc = request.args.get('desc', 'false') == 'true'
+
+    
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -358,6 +362,16 @@ def get_records():
             if q_callnumber:
                 query += " AND i.itemcallnumber LIKE %s"
                 params.append(f"%{q_callnumber}%")
+                
+            order_dir = "DESC" if sort_desc else "ASC"
+            if sort_by == 'title':
+                query += f" ORDER BY b.title {order_dir}"
+            elif sort_by == 'author':
+                query += f" ORDER BY b.author {order_dir}"
+            elif sort_by == 'year':
+                query += f" ORDER BY CAST(bi.publicationyear AS UNSIGNED) {order_dir}"
+            else:
+                query += f" ORDER BY CAST(i.barcode AS UNSIGNED) {order_dir}"
                 
             cursor.execute(query, params)
             rows = cursor.fetchall()
@@ -1002,7 +1016,10 @@ def ai_worker_loop():
                             raw_text = "UNKNOWN TEXT"
                             
                     import json
-                    task_config_str = task.get('task_config', '{}') if 'task_config' in task.keys() else '{}'
+                    try:
+                        task_config_str = task['task_config']
+                    except:
+                        task_config_str = '{}'
                     try:
                         task_config = json.loads(task_config_str) if task_config_str else {}
                     except:

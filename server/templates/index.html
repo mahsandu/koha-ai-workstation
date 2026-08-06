@@ -299,6 +299,10 @@
                     <h3 style="color: var(--text-light); font-size: 0.9rem; margin-bottom: 5px;">Catalogued Today</h3>
                     <div id="dash-catalogued-today" style="font-size: 2rem; font-weight: bold; color: #10b981;">...</div>
                 </div>
+                <div class="stat-card" style="text-align: center;" onclick="switchTab('browser'); setFilter('gaps');">
+                    <h3 style="color: var(--text-light); font-size: 0.9rem; margin-bottom: 5px;">Barcode Gaps</h3>
+                    <div id="dash-gap-count" style="font-size: 2rem; font-weight: bold; color: #ef4444;">Live Check</div>
+                </div>
                 <div class="stat-card" style="text-align: center;" onclick="switchTab('queue');">
                     <h3 style="color: var(--text-light); font-size: 0.9rem; margin-bottom: 5px;">AI Tasks in Queue</h3>
                     <div id="dash-queue-count" style="font-size: 2rem; font-weight: bold; color: #f59e0b;">...</div>
@@ -751,7 +755,9 @@
         }
 
         // --- BROWSER STATS & DATA ---
-        let currentPage = 1; let cachedRecords = []; let currentBiblioIndex = -1;
+        let currentPage = 1;
+        let currentSort = 'barcode';
+        let sortDesc = false; let cachedRecords = []; let currentBiblioIndex = -1;
         async function loadStats() {
             const res = await fetch('/koha_editor/api/stats'); const data = await res.json();
             const issuesHtml = Object.entries(data.issues).filter(x => x[1] > 0).sort((a,b) => b[1]-a[1]).slice(0,4).map(x => `<div class="issue-link" onclick="setFilter('${x[0]}')">${x[0].replace('_', ' ')}: <b>${x[1]}</b></div>`).join('');
@@ -778,7 +784,22 @@
             if(selected === 0 && document.getElementById('selectAllCheckbox')) document.getElementById('selectAllCheckbox').checked = false;
         }
         
-        async function submitBatchFix() {
+        
+        function toggleSort(col) {
+            if (currentSort === col) {
+                sortDesc = !sortDesc;
+            } else {
+                currentSort = col;
+                sortDesc = false;
+            }
+            // Reset indicators
+            document.querySelectorAll('th span[id^="sort-ind-"]').forEach(el => el.textContent = '');
+            document.getElementById(`sort-ind-${col}`).textContent = sortDesc ? '▼' : '▲';
+            
+            currentPage = 1;
+            loadRecords();
+        }
+async function submitBatchFix() {
             const checkboxes = document.querySelectorAll('.row-checkbox:checked');
             const biblionumbers = Array.from(checkboxes).map(cb => cb.value);
             
@@ -812,7 +833,7 @@
             const qb = document.getElementById('search-barcode').value;
             const qc = document.getElementById('search-callnumber').value;
             
-            let query = `filter=${filter}&q_keyword=${encodeURIComponent(qk)}&q_barcode=${encodeURIComponent(qb)}&q_callnumber=${encodeURIComponent(qc)}`; 
+            let query = `filter=${filter}&q_keyword=${encodeURIComponent(qk)}&q_barcode=${encodeURIComponent(qb)}&q_callnumber=${encodeURIComponent(qc)}&sort=${currentSort}&desc=${sortDesc}`;  
             if(filter !== 'all' && filter !== 'garbled' && filter !== 'broken' && filter !== 'today') query += `&issue=${filter}`;
             
             const res = await fetch(`/koha_editor/api/records?page=${currentPage}&limit=50&${query}`);
