@@ -762,6 +762,45 @@ def create_label_batch():
     finally:
         conn.close()
 
+
+@app.route('/api/dashboard/stats', methods=['GET'])
+@login_required
+def get_dashboard_stats():
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # Total Biblios
+            cursor.execute("SELECT COUNT(*) as c FROM koha_mfa.biblio")
+            total_biblios = cursor.fetchone()['c']
+            
+            # Broken Biblios (Missing Author or Pub Year)
+            cursor.execute('''
+                SELECT COUNT(*) as c FROM koha_mfa.biblio b
+                LEFT JOIN koha_mfa.biblioitems bi ON b.biblionumber = bi.biblionumber
+                WHERE b.author IS NULL OR b.author = '' OR bi.publicationyear IS NULL OR bi.publicationyear = ''
+            ''')
+            broken_biblios = cursor.fetchone()['c']
+            
+            # Total Items
+            cursor.execute("SELECT COUNT(*) as c FROM koha_mfa.items")
+            total_items = cursor.fetchone()['c']
+    finally:
+        conn.close()
+        
+    sq_conn = sqlite3.connect(SQLITE_DB)
+    sq_conn.row_factory = sqlite3.Row
+    sq_c = sq_conn.cursor()
+    sq_c.execute("SELECT COUNT(*) as c FROM ai_task_queue WHERE status IN ('pending', 'processing')")
+    queue_count = sq_c.fetchone()['c']
+    sq_conn.close()
+    
+    return jsonify({
+        "total_biblios": total_biblios,
+        "broken_biblios": broken_biblios,
+        "total_items": total_items,
+        "queue_count": queue_count
+    })
+
 # --- IMAGE UPLOADS ---
 @app.route('/api/upload', methods=['POST'])
 @login_required
