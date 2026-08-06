@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sothik IT | Koha AI Workstation</title>
     <link href="https://fonts.googleapis.com/css2?family=Dosis:wght@400;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
     <style>
         :root {
             --bg-color: #F7F6F2;
@@ -32,45 +33,40 @@
         .tab-content { display: none; }
         .tab-content.active { display: block; }
 
-        /* AI Processor Styles */
-        .ai-grid { display: grid; grid-template-columns: 400px 1fr; gap: 30px; }
-        .panel { background: var(--card-bg); border-radius: 12px; padding: 25px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
-        .panel h2 { margin-top: 0; color: var(--text-main); border-bottom: 2px solid var(--border-color); padding-bottom: 10px; }
-        
-        .upload-area { border: 2px dashed var(--primary); border-radius: 8px; padding: 30px; text-align: center; cursor: pointer; transition: background 0.2s; margin-bottom: 20px; }
-        .upload-area:hover { background: #fdf4ff; }
-        
-        .folder-list { max-height: 600px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; }
-        .folder-card { border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; cursor: pointer; transition: border-color 0.2s; }
-        .folder-card:hover, .folder-card.active { border-color: var(--primary); background: #fdf4ff; }
-        
-        .folder-header { font-weight: 700; font-size: 1.1rem; margin-bottom: 10px; color: var(--primary); }
-        .folder-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
-        .folder-inputs input { width: 100%; padding: 8px; border: 1px solid var(--border-color); border-radius: 4px; box-sizing: border-box; }
-        
-        .image-gallery { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 5px; }
-        .image-gallery img { height: 60px; width: 45px; object-fit: cover; border-radius: 4px; border: 1px solid #ddd; }
-        
-        .status-badge { display: inline-block; padding: 3px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; margin-top: 5px; }
-        .status-pending { background: #f3f4f6; color: #4b5563; }
-        .status-processing { background: #fef3c7; color: #d97706; }
-        .status-ready { background: #d1fae5; color: #059669; }
-
+        /* General UI */
         .btn { padding: 10px 20px; font-family: 'Dosis', sans-serif; font-size: 1rem; font-weight: 600; color: white; background: var(--primary); border: none; border-radius: 6px; cursor: pointer; transition: background 0.2s; }
         .btn:hover { background: var(--primary-hover); }
         .btn-outline { background: transparent; color: var(--primary); border: 2px solid var(--primary); }
         .btn-outline:hover { background: var(--primary); color: white; }
         .btn-small { padding: 6px 12px; font-size: 0.9rem; }
+        .btn-danger { background: #fee2e2; color: #dc2626; border: 1px solid #fca5a5; }
+        .btn-danger:hover { background: #fca5a5; color: white; }
         
-        /* Dashboard Stats */
+        .panel { background: var(--card-bg); border-radius: 12px; padding: 25px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        .panel h2 { margin-top: 0; color: var(--text-main); border-bottom: 2px solid var(--border-color); padding-bottom: 10px; }
+        input, select { padding: 8px; border: 1px solid var(--border-color); border-radius: 4px; box-sizing: border-box; font-family: inherit; }
+        input:focus { border-color: var(--primary); outline: none; }
+
+        /* AI Processor */
+        .ai-grid { display: grid; grid-template-columns: 400px 1fr; gap: 30px; }
+        .upload-area { border: 2px dashed var(--primary); border-radius: 8px; padding: 30px; text-align: center; cursor: pointer; transition: background 0.2s; margin-bottom: 20px; }
+        .upload-area:hover { background: #fdf4ff; }
+        .folder-list { max-height: 600px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; }
+        .folder-card { border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; }
+        .image-gallery { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 5px; }
+        .image-gallery img { height: 60px; width: 45px; object-fit: cover; border-radius: 4px; border: 1px solid #ddd; }
+        .status-badge { display: inline-block; padding: 3px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; margin-top: 5px; }
+        .status-pending { background: #f3f4f6; color: #4b5563; }
+        .status-processing { background: #fef3c7; color: #d97706; }
+        .status-ready { background: #d1fae5; color: #059669; }
+
+        /* Browser */
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 25px; }
         .stat-card { background: white; padding: 20px; border-radius: 8px; border: 1px solid var(--border-color); box-shadow: 0 2px 4px rgba(0,0,0,0.02); text-align: center; }
         .stat-card h3 { margin: 0; color: var(--text-light); font-size: 1rem; }
         .stat-card .val { font-size: 2rem; font-weight: 700; color: var(--primary); margin-top: 5px; }
         .issue-link { color: var(--text-main); text-decoration: none; cursor: pointer; transition: color 0.2s; }
         .issue-link:hover { color: var(--primary); text-decoration: underline; }
-
-        /* Data Table */
         .table-container { background: white; border-radius: 8px; border: 1px solid var(--border-color); overflow-x: auto; }
         table { width: 100%; border-collapse: collapse; }
         th { background: #f9fafb; padding: 12px 15px; text-align: left; font-size: 0.9rem; color: var(--text-light); border-bottom: 2px solid var(--border-color); }
@@ -78,9 +74,11 @@
         tr:last-child td { border-bottom: none; }
         
         /* Full Page Editor */
-        .editor-container { max-width: 1000px; margin: 0 auto; background: white; border-radius: 12px; border: 1px solid var(--border-color); padding: 30px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); }
+        .editor-container { max-width: 1400px; margin: 0 auto; background: white; border-radius: 12px; border: 1px solid var(--border-color); padding: 30px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); }
         .editor-top-nav { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--border-color); padding-bottom: 15px; margin-bottom: 20px; }
         .editor-title { font-size: 1.5rem; font-weight: 700; color: var(--primary); }
+        
+        .editor-split { display: grid; grid-template-columns: 2fr 1fr; gap: 30px; }
         
         .marc-field { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; padding: 10px; background: #f9fafb; border: 1px solid var(--border-color); border-radius: 6px; }
         .marc-tag { width: 60px; padding: 8px; font-weight: bold; border: 1px solid #ddd; border-radius: 4px; text-align: center; }
@@ -89,9 +87,24 @@
         .marc-subfield { display: flex; gap: 5px; align-items: center; }
         .marc-sub-code { width: 40px; padding: 8px; text-align: center; font-weight: 600; border: 1px solid #ddd; border-radius: 4px; background: #e5e7eb; }
         .marc-sub-value { flex-grow: 1; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: inherit; }
-        
         .remove-btn { background: #fee2e2; color: #dc2626; border: 1px solid #fca5a5; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-weight: bold; }
         
+        /* Items Grid */
+        .items-panel { background: #fdfdfd; border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; }
+        .items-panel h3 { margin-top: 0; color: var(--primary); border-bottom: 2px solid var(--primary); padding-bottom: 5px; }
+        .item-row { display: flex; gap: 5px; margin-bottom: 8px; align-items: center; }
+        
+        /* Labels Grid */
+        .labels-preview { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 15px; margin-top: 20px; }
+        .label-card { background: white; border: 1px dashed #ccc; padding: 15px; text-align: center; border-radius: 4px; }
+        .label-card svg { width: 100%; height: 60px; }
+        
+        @media print {
+            body * { visibility: hidden; }
+            #labels-print-area, #labels-print-area * { visibility: visible; }
+            #labels-print-area { position: absolute; left: 0; top: 0; width: 100%; }
+            .label-card { break-inside: avoid; border: 1px solid black; }
+        }
     </style>
 </head>
 <body>
@@ -99,8 +112,10 @@
         <h1>
             Sothik IT Portal
             <div class="nav-tabs">
-                <div class="nav-tab active" onclick="switchTab('ai')">AI Batch Upload</div>
-                <div class="nav-tab" onclick="switchTab('browser')">Live Catalog Browser</div>
+                <div class="nav-tab active" onclick="switchTab('ai')">AI Upload</div>
+                <div class="nav-tab" onclick="switchTab('browser')">Catalog Browser</div>
+                <div class="nav-tab" onclick="switchTab('labels')">Label Batch</div>
+                <div class="nav-tab" onclick="switchTab('queue')">Queue Monitor</div>
             </div>
         </h1>
         <div class="user-info">
@@ -110,10 +125,9 @@
 
     <div class="container">
         
-        <!-- AI PROCESSOR TAB -->
+        <!-- AI PROCESSOR -->
         <div id="tab-ai" class="tab-content active">
             <div class="ai-grid">
-                <!-- Left Panel -->
                 <div class="panel">
                     <h2>Batch Folders</h2>
                     <div class="upload-area" onclick="document.getElementById('folder-upload').click()">
@@ -126,7 +140,7 @@
             </div>
         </div>
 
-        <!-- LIVE CATALOG BROWSER TAB -->
+        <!-- CATALOG BROWSER -->
         <div id="tab-browser" class="tab-content">
             <div class="stats-grid" id="stats-container">
                 <div class="stat-card"><h3>Loading...</h3></div>
@@ -173,7 +187,7 @@
             </div>
         </div>
         
-        <!-- FULL PAGE EDITOR TAB -->
+        <!-- FULL PAGE EDITOR -->
         <div id="tab-editor" class="tab-content">
             <div class="editor-container">
                 <div class="editor-top-nav">
@@ -187,25 +201,97 @@
                     </div>
                 </div>
                 
-                <div style="margin-bottom: 20px; display:flex; justify-content: space-between;">
-                    <h2 style="margin:0;">Dynamic MARC Editor</h2>
-                    <div style="display:flex; gap: 10px;">
-                        <button class="btn btn-outline" style="border-color: #059669; color: #059669;" onclick="applyAACR2()">✨ Auto AACR2</button>
-                        <button class="btn btn-outline" onclick="addMarcField()">+ Add Field</button>
-                        <button class="btn" id="btn-save-full" onclick="saveFullRecord()">Save Record</button>
+                <div class="editor-split">
+                    <!-- MARC Data -->
+                    <div>
+                        <div style="margin-bottom: 20px; display:flex; justify-content: space-between;">
+                            <h2 style="margin:0;">Dynamic MARC Editor</h2>
+                            <div style="display:flex; gap: 10px;">
+                                <button class="btn btn-outline" style="border-color: #059669; color: #059669;" onclick="applyAACR2()">✨ Auto AACR2</button>
+                                <button class="btn btn-outline" onclick="addMarcField()">+ Add Field</button>
+                                <button class="btn" id="btn-save-full" onclick="saveFullRecord()">Save Record</button>
+                            </div>
+                        </div>
+                        <div id="marc-editor-fields"></div>
                     </div>
-                </div>
-                
-                <div id="marc-editor-fields">
-                    <!-- Dynamic fields will be rendered here -->
+                    
+                    <!-- Items Data -->
+                    <div class="items-panel">
+                        <h3>Physical Items (Copies)</h3>
+                        
+                        <div style="background: #f3f4f6; padding: 10px; border-radius: 6px; margin-bottom: 15px;">
+                            <strong>Add New Item</strong>
+                            <div style="display:flex; gap: 5px; margin-top:5px;">
+                                <input type="text" id="new-item-barcode" placeholder="Barcode" style="flex:1;">
+                                <button class="btn btn-small" onclick="autoSuggestBarcode()" title="Find lowest missing barcode gap">Find Gap</button>
+                            </div>
+                            <div style="display:flex; gap: 5px; margin-top:5px;">
+                                <input type="text" id="new-item-callnumber" placeholder="Call Number" style="flex:1;">
+                                <button class="btn btn-outline btn-small" onclick="generateCallNumber()">⚡ Auto</button>
+                            </div>
+                            <button class="btn" style="width:100%; margin-top:10px;" onclick="createNewItem()">+ Add Item</button>
+                        </div>
+                        
+                        <div id="items-list-container" style="max-height: 400px; overflow-y: auto;">
+                            <!-- Items go here -->
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
         
+        <!-- LABEL PRINTING -->
+        <div id="tab-labels" class="tab-content">
+            <div class="panel">
+                <h2>Batch Label Printing</h2>
+                <div style="display:flex; gap:10px; margin-bottom: 20px; align-items: flex-end;">
+                    <div>
+                        <label style="display:block; font-size:0.9rem; font-weight:600; margin-bottom:5px;">Start Barcode</label>
+                        <input type="text" id="label-start">
+                    </div>
+                    <div>
+                        <label style="display:block; font-size:0.9rem; font-weight:600; margin-bottom:5px;">End Barcode</label>
+                        <input type="text" id="label-end">
+                    </div>
+                    <button class="btn" onclick="generateLabels()">Generate Labels</button>
+                    <button class="btn btn-outline" onclick="window.print()">Print Labels</button>
+                </div>
+                
+                <div id="labels-print-area" class="labels-preview">
+                    <!-- Labels render here -->
+                </div>
+            </div>
+        </div>
+        
+        <!-- QUEUE MONITOR -->
+        <div id="tab-queue" class="tab-content">
+            <div class="panel">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <h2>Background AI Tasks</h2>
+                    <button class="btn btn-outline btn-small" onclick="fetchQueueStatus()">↻ Refresh</button>
+                </div>
+                <div class="table-container" style="margin-top:20px;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Task ID</th>
+                                <th>Barcode / Images</th>
+                                <th>Status</th>
+                                <th>Extracted Title</th>
+                            </tr>
+                        </thead>
+                        <tbody id="queue-body">
+                            <tr><td colspan="4" style="text-align:center;">No tasks found.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
     </div>
 
     <script>
-        // --- TAB SWITCHING ---
+        // --- NAVIGATION ---
         function switchTab(tab) {
             document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
@@ -216,112 +302,107 @@
             document.getElementById(`tab-${tab}`).classList.add('active');
             
             if(tab === 'browser' && document.getElementById('records-body').innerHTML.includes('Loading')) {
-                loadStats();
-                loadRecords();
+                loadStats(); loadRecords();
+            }
+            if(tab === 'queue') fetchQueueStatus();
+        }
+
+        // --- AI PROCESSOR UPLOAD ---
+        let folders = {}; let folderKeys = [];
+        async function handleUpload(event) {
+            const files = event.target.files;
+            for(let i=0; i<files.length; i++) {
+                const file = files[i];
+                if(file.type.startsWith('image/')) {
+                    const pathParts = file.webkitRelativePath.split('/');
+                    const folderName = pathParts.length > 1 ? pathParts[pathParts.length - 2] : "Unknown";
+                    if(!folders[folderName]) {
+                        folders[folderName] = { folderName: folderName, barcode: folderName.split(/[ -]/)[0] || '', itemCount: folderName.split(/[ -]/)[1] || '', images: [], status: 'pending' };
+                        folderKeys.push(folderName);
+                    }
+                    const formData = new FormData(); formData.append('image', file);
+                    const res = await fetch('/koha_editor/api/upload', { method: 'POST', body: formData });
+                    const data = await res.json();
+                    if(data.success) { folders[folderName].images.push(data.filename); }
+                }
+            }
+            renderFolderList();
+        }
+        function renderFolderList() {
+            const list = document.getElementById('folder-list'); list.innerHTML = '';
+            folderKeys.forEach((key, index) => {
+                const folder = folders[key];
+                let badge = folder.status === 'processing' ? 'status-processing' : 'status-pending';
+                list.innerHTML += `
+                    <div class="folder-card">
+                        <div style="font-weight:700;">${folder.folderName} <span class="status-badge ${badge}">${folder.status}</span></div>
+                        <div class="image-gallery">${folder.images.map(img => `<img src="/koha_editor/images/${img}">`).join('')}</div>
+                    </div>
+                `;
+            });
+        }
+        async function processAllPending() {
+            for(let i=0; i<folderKeys.length; i++) {
+                let f = folders[folderKeys[i]];
+                if(f.status === 'pending') {
+                    f.status = 'processing'; renderFolderList();
+                    await fetch('/koha_editor/api/process_ai', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ images: f.images, barcode: f.barcode, item_count: f.itemCount }) });
+                }
+            }
+            switchTab('queue');
+        }
+
+        // --- QUEUE MONITOR ---
+        async function fetchQueueStatus() {
+            const res = await fetch('/koha_editor/api/queue/status');
+            const data = await res.json();
+            const tbody = document.getElementById('queue-body');
+            
+            if(Object.keys(data.queue).length === 0) {
+                tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;">No active tasks.</td></tr>`;
+                return;
+            }
+            
+            tbody.innerHTML = Object.entries(data.queue).map(([taskId, task]) => `
+                <tr>
+                    <td style="font-size:0.8rem;">${taskId.substring(0,8)}...</td>
+                    <td>Barcode: ${task.barcode} (${task.images.length} imgs)</td>
+                    <td><span class="status-badge status-${task.status}">${task.status}</span></td>
+                    <td>${task.result ? task.result.title : '-'}</td>
+                </tr>
+            `).join('');
+            
+            if(Object.values(data.queue).some(t => t.status === 'processing' || t.status === 'pending')) {
+                setTimeout(fetchQueueStatus, 3000);
             }
         }
 
-        // --- LIVE BROWSER LOGIC ---
-        let currentPage = 1;
-        let cachedRecords = [];
-        let currentBiblioIndex = -1;
-        
+        // --- BROWSER STATS & DATA ---
+        let currentPage = 1; let cachedRecords = []; let currentBiblioIndex = -1;
         async function loadStats() {
-            const res = await fetch('/koha_editor/api/stats');
-            const data = await res.json();
-            
-            const issuesHtml = Object.entries(data.issues)
-                .filter(x => x[1] > 0)
-                .sort((a,b) => b[1]-a[1])
-                .slice(0,4)
-                .map(x => `<div class="issue-link" onclick="setFilter('${x[0]}')">${x[0].replace('_', ' ')}: <b>${x[1]}</b></div>`)
-                .join('');
-                
+            const res = await fetch('/koha_editor/api/stats'); const data = await res.json();
+            const issuesHtml = Object.entries(data.issues).filter(x => x[1] > 0).sort((a,b) => b[1]-a[1]).slice(0,4).map(x => `<div class="issue-link" onclick="setFilter('${x[0]}')">${x[0].replace('_', ' ')}: <b>${x[1]}</b></div>`).join('');
             document.getElementById('stats-container').innerHTML = `
                 <div class="stat-card"><h3>Total Records</h3><div class="val">${data.total}</div></div>
                 <div class="stat-card"><h3>Clean Records</h3><div class="val" style="color:#059669">${data.complete}</div></div>
                 <div class="stat-card"><h3>Needs Attention</h3><div class="val" style="color:#d97706">${data.incomplete}</div></div>
-                <div class="stat-card" style="text-align:left; font-size: 0.85rem;">
-                    <h3 style="margin-bottom:5px;">Top Issues (Click to fix)</h3>
-                    ${issuesHtml}
-                </div>
+                <div class="stat-card" style="text-align:left; font-size: 0.85rem;"><h3 style="margin-bottom:5px;">Top Issues (Click)</h3>${issuesHtml}</div>
             `;
         }
-        
-        function setFilter(issue) {
-            let sel = document.getElementById('filter-select');
-            // ensure the option exists
-            if(![...sel.options].some(o => o.value === issue)) {
-                sel.add(new Option(issue.replace('_', ' '), issue));
-            }
-            sel.value = issue;
-            currentPage = 1;
-            loadRecords();
-        }
-
+        function setFilter(issue) { let sel = document.getElementById('filter-select'); if(![...sel.options].some(o => o.value === issue)) sel.add(new Option(issue.replace('_', ' '), issue)); sel.value = issue; currentPage = 1; loadRecords(); }
         async function loadRecords() {
             const filter = document.getElementById('filter-select').value;
-            let query = `filter=${filter}`;
-            if(filter !== 'all' && filter !== 'garbled') query = `issue=${filter}`;
-            if(filter === 'garbled') query = `filter=garbled`;
-            
-            const res = await fetch(`/koha_editor/api/records?page=${currentPage}&limit=50&${query}`);
-            const data = await res.json();
-            
-            cachedRecords = data.data;
-            document.getElementById('page-info').textContent = `Page ${data.page}`;
+            let query = `filter=${filter}`; if(filter !== 'all' && filter !== 'garbled') query = `issue=${filter}`; if(filter === 'garbled') query = `filter=garbled`;
+            const res = await fetch(`/koha_editor/api/records?page=${currentPage}&limit=50&${query}`); const data = await res.json();
+            cachedRecords = data.data; document.getElementById('page-info').textContent = `Page ${data.page}`;
             const tbody = document.getElementById('records-body');
-            
-            if(data.data.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;">No records found.</td></tr>`;
-                return;
-            }
-            
-            tbody.innerHTML = data.data.map((r, i) => `
-                <tr>
-                    <td>${r.biblionumber}</td>
-                    <td>${r.barcode}</td>
-                    <td>${r.title}</td>
-                    <td>${r.author}</td>
-                    <td>${r.publishercode}</td>
-                    <td>${r.publicationyear}</td>
-                    <td>${r.pages}</td>
-                    <td style="color:#dc2626; font-size:0.8rem; font-weight:600;">${r.issues}</td>
-                    <td><button class="btn btn-small" onclick="openFullEditor(${i})">Full Edit</button></td>
-                </tr>
-            `).join('');
+            if(data.data.length === 0) { tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;">No records found.</td></tr>`; return; }
+            tbody.innerHTML = data.data.map((r, i) => `<tr><td>${r.biblionumber}</td><td>${r.barcode}</td><td>${r.title}</td><td>${r.author}</td><td>${r.publishercode}</td><td>${r.publicationyear}</td><td>${r.pages}</td><td style="color:#dc2626; font-size:0.8rem; font-weight:600;">${r.issues}</td><td><button class="btn btn-small" onclick="openFullEditor(${i})">Full Edit</button></td></tr>`).join('');
         }
-
         function prevPage() { if(currentPage > 1) { currentPage--; loadRecords(); } }
         function nextPage() { currentPage++; loadRecords(); }
 
-        // --- FULL PAGE EDITOR LOGIC ---
-        let currentMarcFields = [];
-        
-        async function openFullEditor(index) {
-            currentBiblioIndex = index;
-            const biblio = cachedRecords[index];
-            document.getElementById('editor-title').textContent = `Editing Biblio #${biblio.biblionumber} (Barcode: ${biblio.barcode})`;
-            document.getElementById('marc-editor-fields').innerHTML = "Loading MARC XML...";
-            
-            switchTab('editor');
-            
-            const res = await fetch(`/koha_editor/api/records/${biblio.biblionumber}/raw`);
-            const data = await res.json();
-            
-            currentMarcFields = data.fields || [];
-            renderMarcEditor();
-        }
-        
-        function loadNextRecord(offset) {
-            const nextIdx = currentBiblioIndex + offset;
-            if(nextIdx >= 0 && nextIdx < cachedRecords.length) {
-                openFullEditor(nextIdx);
-            } else {
-                alert("You reached the end of the current page list!");
-            }
-        }
-
+        // --- FULL PAGE EDITOR (MARC) ---
         const marcLabels = {
             '020': 'ISBN', '022': 'ISSN', '040': 'Cataloging Source', '082': 'DDC Call Number',
             '100': 'Author', '110': 'Corporate Author', '130': 'Uniform Title',
@@ -331,160 +412,159 @@
             '505': 'Contents Note', '520': 'Summary Note', '650': 'Subject', '700': 'Added Entry',
             'LDR': 'Leader'
         };
-
+        let currentMarcFields = [];
+        async function openFullEditor(index) {
+            currentBiblioIndex = index; const biblio = cachedRecords[index];
+            document.getElementById('editor-title').textContent = `Editing Biblio #${biblio.biblionumber} (Barcode: ${biblio.barcode})`;
+            document.getElementById('marc-editor-fields').innerHTML = "Loading MARC XML..."; switchTab('editor');
+            const res = await fetch(`/koha_editor/api/records/${biblio.biblionumber}/raw`); const data = await res.json();
+            currentMarcFields = data.fields || []; renderMarcEditor();
+            loadItems(biblio.biblionumber);
+        }
+        function loadNextRecord(offset) { const nextIdx = currentBiblioIndex + offset; if(nextIdx >= 0 && nextIdx < cachedRecords.length) openFullEditor(nextIdx); else alert("End of list!"); }
+        
         function renderMarcEditor() {
-            const container = document.getElementById('marc-editor-fields');
-            container.innerHTML = '';
-            
+            const container = document.getElementById('marc-editor-fields'); container.innerHTML = '';
             currentMarcFields.forEach((field, fIdx) => {
                 const isControl = field.tag === 'LDR' || (parseInt(field.tag) < 10);
-                
-                let subfieldsHtml = '';
-                if(isControl) {
-                    subfieldsHtml = `<input type="text" class="marc-sub-value" value="${field.value || ''}" onchange="updateMarcValue(${fIdx}, null, this.value)">`;
-                } else {
-                    subfieldsHtml = (field.subfields || []).map((sf, sIdx) => `
-                        <div class="marc-subfield">
-                            <span style="color:var(--primary); font-weight:bold;">$</span>
-                            <input type="text" class="marc-sub-code" value="${sf.code}" onchange="updateMarcCode(${fIdx}, ${sIdx}, this.value)" maxlength="1">
-                            <input type="text" class="marc-sub-value" value="${sf.value.replace(/"/g, '&quot;')}" onchange="updateMarcValue(${fIdx}, ${sIdx}, this.value)">
-                            <button class="remove-btn" onclick="removeSubfield(${fIdx}, ${sIdx})" title="Remove Subfield">×</button>
-                        </div>
-                    `).join('');
-                    subfieldsHtml += `<button class="btn btn-outline btn-small" style="align-self:flex-start; margin-top:5px;" onclick="addSubfield(${fIdx})">+ Subfield</button>`;
-                }
-                
-                const label = marcLabels[field.tag] || 'Custom Field';
-                
-                const div = document.createElement('div');
-                div.className = 'marc-field';
-                div.innerHTML = `
-                    <div style="display:flex; flex-direction:column; gap:5px;">
-                        <button class="remove-btn" onclick="removeField(${fIdx})" title="Remove Entire Field">×</button>
-                        <button class="btn btn-outline btn-small" style="padding:2px; font-size:0.75rem;" onclick="duplicateField(${fIdx})" title="Duplicate Field">Copy</button>
-                    </div>
-                    <div style="display:flex; flex-direction:column; align-items:center; width: 100px;">
-                        <input type="text" class="marc-tag" value="${field.tag}" onchange="updateMarcTag(${fIdx}, this.value)" style="width: 100%; box-sizing:border-box;">
-                        <span style="font-size:0.75rem; color:var(--text-light); text-align:center; margin-top:3px; font-weight:600;">${label}</span>
-                    </div>
-                    ${!isControl ? `
-                        <input type="text" class="marc-ind" value="${field.ind1}" onchange="updateMarcInd(${fIdx}, 1, this.value)" maxlength="1" title="Indicator 1">
-                        <input type="text" class="marc-ind" value="${field.ind2}" onchange="updateMarcInd(${fIdx}, 2, this.value)" maxlength="1" title="Indicator 2">
-                    ` : ''}
-                    <div class="marc-subfields">
-                        ${subfieldsHtml}
-                    </div>
-                `;
+                let subfieldsHtml = isControl ? `<input type="text" class="marc-sub-value" value="${field.value || ''}" onchange="updateMarcValue(${fIdx}, null, this.value)">` : (field.subfields || []).map((sf, sIdx) => `<div class="marc-subfield"><span style="color:var(--primary); font-weight:bold;">$</span><input type="text" class="marc-sub-code" value="${sf.code}" onchange="updateMarcCode(${fIdx}, ${sIdx}, this.value)" maxlength="1"><input type="text" class="marc-sub-value" value="${sf.value.replace(/"/g, '&quot;')}" onchange="updateMarcValue(${fIdx}, ${sIdx}, this.value)"><button class="remove-btn" onclick="removeSubfield(${fIdx}, ${sIdx})">×</button></div>`).join('') + `<button class="btn btn-outline btn-small" style="align-self:flex-start; margin-top:5px;" onclick="addSubfield(${fIdx})">+ Subfield</button>`;
+                const div = document.createElement('div'); div.className = 'marc-field';
+                div.innerHTML = `<div style="display:flex; flex-direction:column; gap:5px;"><button class="remove-btn" onclick="removeField(${fIdx})">×</button><button class="btn btn-outline btn-small" style="padding:2px; font-size:0.75rem;" onclick="duplicateField(${fIdx})">Copy</button></div><div style="display:flex; flex-direction:column; align-items:center; width: 100px;"><input type="text" class="marc-tag" value="${field.tag}" onchange="updateMarcTag(${fIdx}, this.value)" style="width: 100%; box-sizing:border-box;"><span style="font-size:0.75rem; color:var(--text-light); text-align:center; margin-top:3px; font-weight:600;">${marcLabels[field.tag] || 'Custom Field'}</span></div>${!isControl ? `<input type="text" class="marc-ind" value="${field.ind1}" onchange="updateMarcInd(${fIdx}, 1, this.value)" maxlength="1"><input type="text" class="marc-ind" value="${field.ind2}" onchange="updateMarcInd(${fIdx}, 2, this.value)" maxlength="1">` : ''}<div class="marc-subfields">${subfieldsHtml}</div>`;
                 container.appendChild(div);
             });
         }
-        
         function updateMarcTag(fIdx, val) { currentMarcFields[fIdx].tag = val; }
         function updateMarcInd(fIdx, indNum, val) { currentMarcFields[fIdx][`ind${indNum}`] = val; }
         function updateMarcCode(fIdx, sIdx, val) { currentMarcFields[fIdx].subfields[sIdx].code = val; }
-        function updateMarcValue(fIdx, sIdx, val) { 
-            if(sIdx === null) currentMarcFields[fIdx].value = val;
-            else currentMarcFields[fIdx].subfields[sIdx].value = val; 
-        }
-        
-        function addMarcField() {
-            currentMarcFields.push({ tag: '500', ind1: ' ', ind2: ' ', subfields: [{code: 'a', value: ''}] });
-            renderMarcEditor();
-        }
-        function addSubfield(fIdx) {
-            currentMarcFields[fIdx].subfields.push({code: 'a', value: ''});
-            renderMarcEditor();
-        }
-        function removeField(fIdx) {
-            if(confirm("Delete this entire field?")) {
-                currentMarcFields.splice(fIdx, 1);
-                renderMarcEditor();
-            }
-        }
-        function removeSubfield(fIdx, sIdx) {
-            currentMarcFields[fIdx].subfields.splice(sIdx, 1);
-            renderMarcEditor();
-        }
-        
-        function duplicateField(fIdx) {
-            let original = currentMarcFields[fIdx];
-            let copy = JSON.parse(JSON.stringify(original));
-            currentMarcFields.splice(fIdx + 1, 0, copy);
-            renderMarcEditor();
-        }
-
+        function updateMarcValue(fIdx, sIdx, val) { if(sIdx === null) currentMarcFields[fIdx].value = val; else currentMarcFields[fIdx].subfields[sIdx].value = val; }
+        function addMarcField() { currentMarcFields.push({ tag: '500', ind1: ' ', ind2: ' ', subfields: [{code: 'a', value: ''}] }); renderMarcEditor(); }
+        function addSubfield(fIdx) { currentMarcFields[fIdx].subfields.push({code: 'a', value: ''}); renderMarcEditor(); }
+        function removeField(fIdx) { if(confirm("Delete this field?")) { currentMarcFields.splice(fIdx, 1); renderMarcEditor(); } }
+        function removeSubfield(fIdx, sIdx) { currentMarcFields[fIdx].subfields.splice(sIdx, 1); renderMarcEditor(); }
+        function duplicateField(fIdx) { let copy = JSON.parse(JSON.stringify(currentMarcFields[fIdx])); currentMarcFields.splice(fIdx + 1, 0, copy); renderMarcEditor(); }
         function applyAACR2() {
             let f245 = currentMarcFields.find(f => f.tag === '245');
-            if (f245 && f245.subfields) {
-                let sfa = f245.subfields.find(s => s.code === 'a');
-                let sfb = f245.subfields.find(s => s.code === 'b');
-                let sfc = f245.subfields.find(s => s.code === 'c');
-
-                if (sfa && sfb) {
-                    let val = sfa.value.trim();
-                    if (!val.endsWith(':') && !val.endsWith('/')) {
-                        sfa.value = val + ' :';
-                    }
-                }
-                
-                if (sfc) {
-                    let target = sfb || sfa;
-                    if (target) {
-                        let val = target.value.trim();
-                        if (!val.endsWith('/')) {
-                            target.value = val + ' /';
-                        }
-                    }
-                }
-            }
-            
+            if (f245 && f245.subfields) { let sfa = f245.subfields.find(s => s.code === 'a'); let sfb = f245.subfields.find(s => s.code === 'b'); let sfc = f245.subfields.find(s => s.code === 'c'); if (sfa && sfb) { let val = sfa.value.trim(); if (!val.endsWith(':') && !val.endsWith('/')) sfa.value = val + ' :'; } if (sfc) { let target = sfb || sfa; if (target) { let val = target.value.trim(); if (!val.endsWith('/')) target.value = val + ' /'; } } }
             let f300 = currentMarcFields.find(f => f.tag === '300');
-            if (f300 && f300.subfields) {
-                let sfa = f300.subfields.find(s => s.code === 'a');
-                let sfc = f300.subfields.find(s => s.code === 'c');
-                
-                if (sfa) {
-                    let val = sfa.value.trim();
-                    if (/^\d+$/.test(val)) { sfa.value = val + ' p.'; }
-                    else if (val.endsWith('p')) { sfa.value = val + '.'; }
-                }
-                if (sfc) {
-                    let val = sfc.value.trim();
-                    if (/^\d+$/.test(val)) { sfc.value = val + ' cm.'; }
-                    else if (val.endsWith('cm')) { sfc.value = val + '.'; }
-                }
-            }
-            
-            renderMarcEditor();
+            if (f300 && f300.subfields) { let sfa = f300.subfields.find(s => s.code === 'a'); let sfc = f300.subfields.find(s => s.code === 'c'); if (sfa) { let val = sfa.value.trim(); if (/^\d+$/.test(val)) sfa.value = val + ' p.'; else if (val.endsWith('p')) sfa.value = val + '.'; } if (sfc) { let val = sfc.value.trim(); if (/^\d+$/.test(val)) sfc.value = val + ' cm.'; else if (val.endsWith('cm')) sfc.value = val + '.'; } }
+            renderMarcEditor(); alert("AACR2 Rules Applied!");
         }
 
         async function saveFullRecord() {
             const biblio = cachedRecords[currentBiblioIndex];
-            const btn = document.getElementById('btn-save-full');
-            btn.textContent = 'Saving...';
             
-            const res = await fetch(`/koha_editor/api/records/${biblio.biblionumber}`, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ fields: currentMarcFields })
-            });
+            // 1. Deduplication check
+            let title = '', author = '';
+            let f245 = currentMarcFields.find(f => f.tag === '245'); if(f245 && f245.subfields) { let sf = f245.subfields.find(s => s.code === 'a'); if(sf) title = sf.value; }
+            let f100 = currentMarcFields.find(f => f.tag === '100'); if(f100 && f100.subfields) { let sf = f100.subfields.find(s => s.code === 'a'); if(sf) author = sf.value; }
             
-            const data = await res.json();
-            if(data.success) {
-                btn.textContent = "Saved ✓";
-                btn.style.background = "#059669";
-                
-                // Refresh background data
-                loadStats();
-                loadRecords();
-                
-                setTimeout(() => { btn.textContent = "Save Record"; btn.style.background = "var(--primary)"; }, 2000);
-            } else {
-                alert("Error saving record.");
-                btn.textContent = "Save Record";
+            const dupRes = await fetch(`/koha_editor/api/check_duplicate_biblio`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ title: title, author: author, current_biblionumber: biblio.biblionumber }) });
+            const dupData = await dupRes.json();
+            if(dupData.is_duplicate) {
+                if(!confirm(`WARNING: A possible duplicate record exists (Biblio #${dupData.duplicate_biblio}) with this Title and Author! Are you sure you want to save?`)) return;
             }
+
+            const btn = document.getElementById('btn-save-full'); btn.textContent = 'Saving...';
+            const res = await fetch(`/koha_editor/api/records/${biblio.biblionumber}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ fields: currentMarcFields }) });
+            const data = await res.json();
+            if(data.success) { btn.textContent = "Saved ✓"; btn.style.background = "#059669"; loadStats(); loadRecords(); setTimeout(() => { btn.textContent = "Save Record"; btn.style.background = "var(--primary)"; }, 2000); }
+            else { alert("Error saving record."); btn.textContent = "Save Record"; }
         }
 
+        // --- FULL PAGE EDITOR (ITEMS) ---
+        let currentItems = [];
+        async function loadItems(biblionumber) {
+            const res = await fetch(`/koha_editor/api/records/${biblionumber}/items`);
+            const data = await res.json();
+            currentItems = data.items || [];
+            renderItems();
+        }
+        function renderItems() {
+            const container = document.getElementById('items-list-container');
+            container.innerHTML = currentItems.map((item, idx) => `
+                <div class="item-row">
+                    <input type="text" value="${item.barcode}" id="item-bc-${idx}" style="width: 120px;" placeholder="Barcode">
+                    <input type="text" value="${item.itemcallnumber || ''}" id="item-cn-${idx}" style="flex:1;" placeholder="Call Number">
+                    <button class="btn btn-small" onclick="updateItem(${idx})">Save</button>
+                    <button class="btn btn-outline btn-small" onclick="duplicateItem(${idx})">Copy</button>
+                    <button class="btn btn-danger btn-small" onclick="deleteItem(${idx})">×</button>
+                </div>
+            `).join('');
+        }
+        async function autoSuggestBarcode() {
+            const res = await fetch(`/koha_editor/api/next_barcode`);
+            const data = await res.json();
+            document.getElementById('new-item-barcode').value = data.next_barcode;
+        }
+        function generateCallNumber() {
+            let f082 = currentMarcFields.find(f => f.tag === '082');
+            let f100 = currentMarcFields.find(f => f.tag === '100');
+            let dewey = "", authorCutter = "";
+            if(f082 && f082.subfields) { let sf = f082.subfields.find(s => s.code === 'a'); if(sf) dewey = sf.value; }
+            if(f100 && f100.subfields) { let sf = f100.subfields.find(s => s.code === 'a'); if(sf) authorCutter = sf.value.charAt(0).toUpperCase(); }
+            let cn = `${dewey} ${authorCutter}`.trim();
+            document.getElementById('new-item-callnumber').value = cn;
+        }
+        async function createNewItem() {
+            const biblio = cachedRecords[currentBiblioIndex];
+            const barcode = document.getElementById('new-item-barcode').value;
+            const cn = document.getElementById('new-item-callnumber').value;
+            if(!barcode) return alert("Barcode is required!");
+            const res = await fetch('/koha_editor/api/items', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ biblionumber: biblio.biblionumber, barcode: barcode, itemcallnumber: cn }) });
+            const data = await res.json();
+            if(data.error) alert(data.error);
+            else { document.getElementById('new-item-barcode').value = ''; loadItems(biblio.biblionumber); }
+        }
+        async function updateItem(idx) {
+            const item = currentItems[idx];
+            const barcode = document.getElementById(`item-bc-${idx}`).value;
+            const cn = document.getElementById(`item-cn-${idx}`).value;
+            const res = await fetch(`/koha_editor/api/items/${item.itemnumber}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ barcode: barcode, itemcallnumber: cn }) });
+            const data = await res.json();
+            if(data.error) alert(data.error);
+            else alert("Item updated!");
+        }
+        async function deleteItem(idx) {
+            if(!confirm("Delete this physical item?")) return;
+            const item = currentItems[idx];
+            await fetch(`/koha_editor/api/items/${item.itemnumber}`, { method: 'DELETE' });
+            loadItems(cachedRecords[currentBiblioIndex].biblionumber);
+        }
+        function duplicateItem(idx) {
+            const item = currentItems[idx];
+            document.getElementById('new-item-barcode').value = "";
+            document.getElementById('new-item-callnumber').value = item.itemcallnumber;
+            autoSuggestBarcode();
+            alert("Metadata copied to New Item row. Just hit Add Item!");
+        }
+
+        // --- LABEL PRINTING ---
+        function generateLabels() {
+            const start = document.getElementById('label-start').value;
+            const end = document.getElementById('label-end').value;
+            if(!start) return alert("Need a barcode range!");
+            
+            // Dummy logic for previewing labels
+            let container = document.getElementById('labels-print-area');
+            container.innerHTML = '';
+            
+            let sNum = parseInt(start.replace(/\D/g,'')) || 0;
+            let eNum = parseInt(end.replace(/\D/g,'')) || sNum;
+            let prefix = start.replace(/[0-9]+$/, '');
+            
+            for(let i=sNum; i<=eNum; i++) {
+                let bc = prefix + i.toString();
+                let div = document.createElement('div');
+                div.className = 'label-card';
+                div.innerHTML = `
+                    <div style="font-weight:bold; font-size:0.9rem; margin-bottom:5px;">${bc}</div>
+                    <svg id="barcode-${bc}"></svg>
+                    <div style="font-size:0.8rem; margin-top:5px;">Sothik IT Library</div>
+                `;
+                container.appendChild(div);
+                JsBarcode(`#barcode-${bc}`, bc, { format: "CODE128", width: 1.5, height: 40, displayValue: false });
+            }
+        }
     </script>
 </body>
 </html>

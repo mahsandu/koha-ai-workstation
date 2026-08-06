@@ -356,6 +356,140 @@ def update_record(biblionumber):
         
     return jsonify({"success": True})
 
+# --- ITEMS MANAGEMENT ---
+@app.route('/api/records/<biblionumber>/items')
+@login_required
+def get_items(biblionumber):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT itemnumber, barcode, itemcallnumber, homebranch, location
+                FROM koha_mfa.items 
+                WHERE biblionumber = %s
+            """, (biblionumber,))
+            items = cursor.fetchall()
+            return jsonify({"items": items})
+    finally:
+        conn.close()
+
+@app.route('/api/items', methods=['POST'])
+@login_required
+def create_item():
+    data = request.json
+    biblionumber = data.get('biblionumber')
+    barcode = data.get('barcode', '').strip()
+    callnumber = data.get('itemcallnumber', '')
+    
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT itemnumber FROM koha_mfa.items WHERE barcode = %s", (barcode,))
+            if cursor.fetchone():
+                return jsonify({"error": "Barcode already exists!"}), 400
+                
+            cursor.execute("SELECT biblioitemnumber FROM koha_mfa.biblioitems WHERE biblionumber = %s", (biblionumber,))
+            bitem = cursor.fetchone()
+            if not bitem:
+                return jsonify({"error": "Biblio not found"}), 404
+            biblioitemnumber = bitem['biblioitemnumber']
+            
+            cursor.execute("""
+                INSERT INTO koha_mfa.items (biblionumber, biblioitemnumber, barcode, itemcallnumber)
+                VALUES (%s, %s, %s, %s)
+            """, (biblionumber, biblioitemnumber, barcode, callnumber))
+            conn.commit()
+            return jsonify({"success": True, "itemnumber": cursor.lastrowid})
+    finally:
+        conn.close()
+
+@app.route('/api/items/<itemnumber>', methods=['PUT', 'DELETE'])
+@login_required
+def modify_item(itemnumber):
+    conn = get_db_connection()
+    try:
+        if request.method == 'DELETE':
+            with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM koha_mfa.items WHERE itemnumber = %s", (itemnumber,))
+                conn.commit()
+            return jsonify({"success": True})
+        
+        elif request.method == 'PUT':
+            data = request.json
+            barcode = data.get('barcode', '').strip()
+            callnumber = data.get('itemcallnumber', '')
+            
+            with conn.cursor() as cursor:
+                if barcode:
+                    cursor.execute("SELECT itemnumber FROM koha_mfa.items WHERE barcode = %s AND itemnumber != %s", (barcode, itemnumber))
+                    if cursor.fetchone():
+                        return jsonify({"error": "Barcode already exists!"}), 400
+                
+                cursor.execute("""
+                    UPDATE koha_mfa.items 
+                    SET barcode = %s, itemcallnumber = %s 
+                    WHERE itemnumber = %s
+                """, (barcode, callnumber, itemnumber))
+                conn.commit()
+            return jsonify({"success": True})
+    finally:
+        conn.close()
+
+@app.route('/api/next_barcode')
+@login_required
+def get_next_barcode():
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT barcode FROM koha_mfa.items WHERE barcode REGEXP '^[0-9]+$'")
+            rows = cursor.fetchall()
+            if not rows:
+                return jsonify({"next_barcode": "10001"})
+            
+            barcodes = sorted([int(r['barcode']) for r in rows])
+            if not barcodes: return jsonify({"next_barcode": "10001"})
+            
+            for i in range(len(barcodes) - 1):
+                if barcodes[i+1] - barcodes[i] > 1:
+                    return jsonify({"next_barcode": str(barcodes[i] + 1)})
+                    
+            return jsonify({"next_barcode": str(barcodes[-1] + 1)})
+    finally:
+        conn.close()
+
+@app.route('/api/check_duplicate_biblio', methods=['POST'])
+@login_required
+def check_duplicate_biblio():
+    data = request.json
+    title = data.get('title', '').strip()
+    author = data.get('author', '').strip()
+    biblionumber = data.get('current_biblionumber', None)
+    
+    if not title:
+        return jsonify({"is_duplicate": False})
+        
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            if biblionumber:
+                cursor.execute("""
+                    SELECT biblionumber FROM koha_mfa.biblio 
+                    WHERE title = %s AND author = %s AND biblionumber != %s
+                    LIMIT 1
+                """, (title, author, biblionumber))
+            else:
+                cursor.execute("""
+                    SELECT biblionumber FROM koha_mfa.biblio 
+                    WHERE title = %s AND author = %s
+                    LIMIT 1
+                """, (title, author))
+            row = cursor.fetchone()
+            if row:
+                return jsonify({"is_duplicate": True, "duplicate_biblio": row['biblionumber']})
+            return jsonify({"is_duplicate": False})
+    finally:
+        conn.close()
+
 
 # --- IMAGE UPLOADS ---
 @app.route('/api/upload', methods=['POST'])
@@ -425,6 +559,11 @@ def check_ai(task_id):
     if task_id in AI_QUEUE:
         return jsonify(AI_QUEUE[task_id])
     return jsonify({"error": "Not found"}), 404
+
+@app.route('/api/queue/status', methods=['GET'])
+@login_required
+def queue_status():
+    return jsonify({"queue": AI_QUEUE})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5050)
