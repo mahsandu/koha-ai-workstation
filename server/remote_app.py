@@ -784,6 +784,10 @@ def get_dashboard_stats():
             # Total Items
             cursor.execute("SELECT COUNT(*) as c FROM koha_mfa.items")
             total_items = cursor.fetchone()['c']
+            
+            # Catalogued Today
+            cursor.execute("SELECT COUNT(*) as c FROM koha_mfa.biblio WHERE DATE(datecreated) = CURDATE()")
+            catalogued_today = cursor.fetchone()['c']
     finally:
         conn.close()
         
@@ -798,7 +802,8 @@ def get_dashboard_stats():
         "total_biblios": total_biblios,
         "broken_biblios": broken_biblios,
         "total_items": total_items,
-        "queue_count": queue_count
+        "queue_count": queue_count,
+        "catalogued_today": catalogued_today
     })
 
 # --- IMAGE UPLOADS ---
