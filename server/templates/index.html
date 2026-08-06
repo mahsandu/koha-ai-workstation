@@ -534,8 +534,12 @@
                         <div style="display:flex; gap:5px;">
                             <button class="btn btn-outline btn-small" onclick="createSourceFolder()">+ Folder</button>
                             <label class="btn btn-small" style="cursor: pointer; display: inline-block; margin:0;">
-                                Upload
+                                Upload Files
                                 <input type="file" id="source-upload-input" multiple style="display:none" onchange="uploadSourceFiles(this.files)">
+                            </label>
+                            <label class="btn btn-small" style="cursor: pointer; display: inline-block; margin:0;">
+                                Upload Folder
+                                <input type="file" id="source-folder-upload-input" webkitdirectory directory multiple style="display:none" onchange="uploadSourceFiles(this.files)">
                             </label>
                         </div>
                     </div>
@@ -566,12 +570,16 @@
                         <button class="btn btn-outline btn-small" onclick="actionZip()">🗜 Zip</button>
                         <button class="btn btn-outline btn-small" onclick="actionUnzip()">📂 Unzip</button>
                         <button class="btn btn-outline btn-small btn-danger" onclick="actionRemoveEmptyFolders()">🧹 Remove Empty</button>
+                        <button class="btn btn-outline btn-small" onclick="actionNormalizeFolders()">🔀 Normalize</button>
+                        <button class="btn btn-outline btn-small" onclick="showSourceStats()">📊 Stats</button>
                         <div class="toolbar-divider"></div>
                         <span class="toolbar-label">Image:</span>
-                        <button class="btn btn-outline btn-small" onclick="actionImageTool('crop')">🖼 Crop</button>
+                        <button class="btn btn-outline btn-small" onclick="actionImageTool('crop')">🖼 Auto Crop</button>
+                        <button class="btn btn-outline btn-small" onclick="actionImageTool('smart_crop')">🧠 Smart Crop</button>
                         <button class="btn btn-outline btn-small" onclick="actionImageTool('optimize')">✨ Optimize</button>
                         <button class="btn btn-outline btn-small" onclick="actionImageTool('deskew')">📐 De-skew</button>
-                        <button class="btn btn-outline btn-small" onclick="actionRotatePrompt()">🔄 Rotate</button>
+                        <button class="btn btn-outline btn-small" onclick="actionImageTool('smart_rotate')">🔄 Auto Rotate</button>
+                        <button class="btn btn-outline btn-small" onclick="actionRotatePrompt()">↻ Manual Rotate</button>
                         <button class="btn btn-outline btn-small" onclick="actionImageTool('colorize')">🎨 Colorize</button>
                         <button class="btn btn-outline btn-small" onclick="actionImageTool('autofix')">🔧 Auto Fix</button>
                         <button class="btn btn-small" onclick="saveSourceFile()" id="btn-save-source" style="display:none; margin-left:auto;">Save File Changes</button>
@@ -964,8 +972,23 @@
                     const icon = item.is_dir ? "📁" : "📄";
                     const itemPath = item.path;
                     if(item.is_dir) {
+                        let statusHtml = '';
+                        if(item.catalog_status) {
+                            const s = item.catalog_status;
+                            const badges = [];
+                            if(s.image_count > 0) badges.push(`<span title="${s.image_count} image(s)" style="background:#dbeafe;color:#1e40af;padding:2px 6px;border-radius:10px;font-size:0.75rem;margin-left:6px;">🖼 ${s.image_count}</span>`);
+                            if(s.has_ocr) badges.push(`<span title="OCR ready" style="background:#dcfce7;color:#166534;padding:2px 6px;border-radius:10px;font-size:0.75rem;margin-left:6px;">OCR</span>`);
+                            else if(s.image_count > 0) badges.push(`<span title="OCR pending" style="background:#fee2e2;color:#991b1b;padding:2px 6px;border-radius:10px;font-size:0.75rem;margin-left:6px;">OCR?</span>`);
+                            if(s.has_metadata) badges.push(`<span title="Metadata ready" style="background:#dcfce7;color:#166534;padding:2px 6px;border-radius:10px;font-size:0.75rem;margin-left:6px;">Meta</span>`);
+                            else if(s.has_ocr) badges.push(`<span title="Metadata pending" style="background:#fee2e2;color:#991b1b;padding:2px 6px;border-radius:10px;font-size:0.75rem;margin-left:6px;">Meta?</span>`);
+                            if(s.has_mrc) badges.push(`<span title="MRC ready" style="background:#dcfce7;color:#166534;padding:2px 6px;border-radius:10px;font-size:0.75rem;margin-left:6px;">MRC</span>`);
+                            else if(s.has_metadata) badges.push(`<span title="MRC pending" style="background:#fee2e2;color:#991b1b;padding:2px 6px;border-radius:10px;font-size:0.75rem;margin-left:6px;">MRC?</span>`);
+                            if(s.has_koha_import) badges.push(`<span title="Koha import ready" style="background:#dcfce7;color:#166534;padding:2px 6px;border-radius:10px;font-size:0.75rem;margin-left:6px;">Koha</span>`);
+                            statusHtml = `<span style="margin-left:auto;display:flex;align-items:center;">${badges.join('')}</span>`;
+                        }
                         html += `<div style="padding: 8px; cursor: pointer; display: flex; align-items: center; border-bottom: 1px solid #eee;" onclick="loadSourceFolder('${itemPath.replace(/'/g, "\\'")}')">
-                            <span style="margin-right: 10px;">${icon}</span> ${item.name}
+                            <span style="margin-right: 10px;">${icon}</span> <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${item.name}</span>
+                            ${statusHtml}
                         </div>`;
                     } else {
                         html += `<div style="padding: 8px; display: flex; align-items: center; border-bottom: 1px solid #eee;">
@@ -1196,9 +1219,12 @@
         }
 
         async function actionImageTool(tool, params) {
-            const paths = getSelectedSourceFiles().filter(p => /\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(p));
-            if(paths.length === 0) { showAlert("Select image files only."); return; }
-            const body = {paths: paths, tool: tool};
+            let paths = getSelectedSourceFiles().filter(p => /\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(p));
+            const scope = paths.length > 0 ? 'selected' : 'folder';
+            if(scope === 'folder' && !currentSourcePath) {
+                showAlert("Open a folder or select image files."); return;
+            }
+            const body = {paths: paths, tool: tool, path: currentSourcePath, scope: scope};
             if(params) body.params = params;
             const res = await fetch('/koha_editor/api/source/image_tool', {
                 method: 'POST', headers: {'Content-Type':'application/json'},
@@ -1206,20 +1232,20 @@
             });
             const data = await res.json();
             if(data.success) {
-                showAlert(`Image ${tool} queued. Task IDs: ${(data.task_ids || []).join(', ')}`);
+                showAlert(`Image ${tool} queued for ${data.image_count} image(s).`);
                 setTimeout(() => loadSourceFolder(currentSourcePath), 2000);
             } else { showAlert("Error: " + data.error); }
         }
 
         function actionRotatePrompt() {
-            const paths = getSelectedSourceFiles().filter(p => /\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(p));
-            if(paths.length === 0) { showAlert("Select image files to rotate."); return; }
+            let paths = getSelectedSourceFiles().filter(p => /\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(p));
+            if(paths.length === 0 && !currentSourcePath) { showAlert("Open a folder or select image files to rotate."); return; }
             openAppModal('Rotate Images',
                 `<p>Enter rotation angle (degrees). Positive values rotate clockwise.</p>
                  <input type="number" id="rotate-angle" style="width:100%; padding:8px;" value="90" step="1">`,
                 () => {
                     const angle = parseFloat(document.getElementById('rotate-angle').value) || 0;
-                    actionImageTool('rotate', {angle: angle});
+                    actionImageTool('rotate', {angle: angle, mode: 'manual'});
                 }, 'Rotate', true);
             setTimeout(() => { const el = document.getElementById('rotate-angle'); if(el) el.focus(); }, 50);
         }
@@ -1244,6 +1270,55 @@
                     loadSourceFolder(currentSourcePath);
                 } else { showAlert("Error: " + data.error); }
             }, 'Remove', true);
+        }
+
+        async function actionNormalizeFolders() {
+            openAppModal('Normalize Source Folders',
+                '<p>This will flatten sub-folders, merge duplicate .txt files into one .ocr.txt, keep only koha_import.mrc, and consolidate .mrk files. Original images are preserved.</p>',
+                async () => {
+                    const res = await fetch('/koha_editor/api/source/normalize', {method: 'POST', headers: {'Content-Type':'application/json'}});
+                    const data = await res.json();
+                    if(data.success) {
+                        const report = [
+                            `Flattened: ${(data.flattened || []).length}`,
+                            `Merged txt: ${(data.merged_txt || []).length}`,
+                            `Consolidated mrc: ${(data.consolidated_mrc || []).length}`,
+                            `Consolidated mrk: ${(data.consolidated_mrk || []).length}`,
+                            `Removed empty: ${(data.removed_empty || []).length}`
+                        ].join(', ');
+                        showAlert(`Normalized. ${report}\n${(data.errors || []).slice(0, 10).join('\n')}`);
+                        loadSourceFolder(currentSourcePath);
+                    } else { showAlert("Error: " + data.error); }
+                }, 'Normalize', true);
+        }
+
+        async function showSourceStats() {
+            const res = await fetch('/koha_editor/api/source/stats');
+            const data = await res.json();
+            if(!data.success) { showAlert("Error: " + data.error); return; }
+            const s = data.stats;
+            const fileTypes = Object.entries(s.file_types || {}).sort((a,b) => b[1] - a[1]).map(([ext, count]) => `${ext}: ${count}`).join(', ');
+            const folderRows = (s.top_folders || []).map(f => {
+                const st = f.status || {};
+                const badges = [
+                    st.image_count || 0,
+                    st.has_ocr ? 'O' : '-',
+                    st.has_metadata ? 'M' : '-',
+                    st.has_mrc ? 'R' : '-',
+                    st.has_koha_import ? 'K' : '-'
+                ].join(' ');
+                return `<tr><td>${escapeHtml(f.name)}</td><td>${badges}</td></tr>`;
+            }).join('');
+            openAppModal('Source Statistics',
+                `<div style="max-height:60vh;overflow:auto;">
+                 <p><b>Folders:</b> ${s.folders} &nbsp; <b>Images:</b> ${s.images} &nbsp; <b>With Originals:</b> ${s.original_images}</p>
+                 <p><b>OCR Ready:</b> ${s.ocr_ready} &nbsp; <b>Meta Ready:</b> ${s.metadata_ready} &nbsp; <b>MRC Ready:</b> ${s.mrc_ready} &nbsp; <b>Koha Import Ready:</b> ${s.koha_import_ready}</p>
+                 <p><b>File Types:</b> ${fileTypes}</p>
+                 <table style="width:100%;border-collapse:collapse;margin-top:10px;">
+                 <thead><tr><th style="text-align:left;border-bottom:1px solid #ddd;">Folder</th><th style="text-align:left;border-bottom:1px solid #ddd;">Img OCR Meta MRC Koha</th></tr></thead>
+                 <tbody>${folderRows}</tbody></table>
+                 </div>`,
+                null, 'Close', false);
         }
 
         async function batchProcessImages() {

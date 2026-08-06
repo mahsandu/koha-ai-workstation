@@ -1249,6 +1249,50 @@ def zebra_reindex():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+def _folder_catalog_status(folder_path):
+    """Check cataloguing readiness for a source folder (one biblio record)."""
+    status = {
+        "has_images": False,
+        "has_originals": False,
+        "has_ocr": False,
+        "has_metadata": False,
+        "has_mrc": False,
+        "has_koha_import": False,
+        "image_count": 0,
+        "ready_for": []
+    }
+    if not os.path.isdir(folder_path):
+        return status
+    for root, dirs, files in os.walk(folder_path):
+        for fname in files:
+            lower = fname.lower()
+            if lower.endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp')):
+                status["image_count"] += 1
+                if '_original' in lower:
+                    status["has_originals"] = True
+                else:
+                    status["has_images"] = True
+            elif lower.endswith('.ocr.txt'):
+                status["has_ocr"] = True
+            elif lower.endswith('.json') and not lower.endswith('_meta.json'):
+                # Could be extracted_metadata.json or similar
+                status["has_metadata"] = True
+            elif lower.endswith(('.mrc', '.mrk')):
+                status["has_mrc"] = True
+            elif 'koha_import' in lower and lower.endswith('.mrc'):
+                status["has_koha_import"] = True
+    # Determine next ready step
+    if status["has_images"]:
+        status["ready_for"].append("OCR")
+    if status["has_ocr"]:
+        status["ready_for"].append("Metadata")
+    if status["has_metadata"]:
+        status["ready_for"].append("MRC")
+    if status["has_mrc"]:
+        status["ready_for"].append("Stage to Koha")
+    return status
+
+
 @app.route('/api/source/list', methods=['GET'])
 @login_required
 def source_list():
@@ -1269,13 +1313,16 @@ def source_list():
             size = os.path.getsize(full_path) if not is_dir else 0
             mtime = os.path.getmtime(full_path)
             
-            items.append({
+            item = {
                 "name": f,
                 "path": rel_path,
                 "is_dir": is_dir,
                 "size": size,
                 "mtime": mtime
-            })
+            }
+            if is_dir:
+                item["catalog_status"] = _folder_catalog_status(full_path)
+            items.append(item)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
         
@@ -1300,30 +1347,46 @@ def source_mkdir():
 @login_required
 def source_upload():
     path = request.form.get('path', '')
-    target_dir = resolve_source_path(path)
-    os.makedirs(target_dir, exist_ok=True)
-    
-    # Enforce 10MB per file limit
-    max_size = 10 * 1024 * 1024
+    base_target_dir = resolve_source_path(path)
+    os.makedirs(base_target_dir, exist_ok=True)
+
+    # Enforce 20MB per file limit
+    max_size = 20 * 1024 * 1024
     if 'file' not in request.files:
         return jsonify({"error": "No file part"}), 400
-    
+
     files = request.files.getlist('file')
     saved = []
     try:
         for f in files:
-            if f.filename:
-                # Check file size
-                f.seek(0, os.SEEK_END)
-                size = f.tell()
-                f.seek(0)
-                if size > max_size:
-                    return jsonify({"error": f"File {f.filename} exceeds 10MB limit"}), 400
-                # Basic sanitization
-                filename = "".join(c for c in f.filename if c.isalnum() or c in " ._-")
-                save_path = os.path.join(target_dir, filename)
-                f.save(save_path)
-                saved.append(filename)
+            if not f.filename:
+                continue
+            # Check file size
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(0)
+            if size > max_size:
+                return jsonify({"error": f"File {f.filename} exceeds 20MB limit"}), 400
+
+            # Browser folder uploads include relative paths like "folder/file.jpg"
+            rel_path = f.filename.replace('\\', '/')
+            filename = os.path.basename(rel_path)
+            sub_dir = os.path.dirname(rel_path)
+
+            # Sanitize path components
+            filename = "".join(c for c in filename if c.isalnum() or c in " ._-")
+            if sub_dir:
+                # Remove leading/trailing dots/slashes and sanitize each part
+                parts = [p.strip().strip('.') for p in sub_dir.split('/') if p.strip().strip('.')]
+                parts = ["".join(c for c in p if c.isalnum() or c in " _-") for p in parts]
+                target_dir = os.path.join(base_target_dir, *parts)
+                os.makedirs(target_dir, exist_ok=True)
+            else:
+                target_dir = base_target_dir
+
+            save_path = os.path.join(target_dir, filename)
+            f.save(save_path)
+            saved.append(rel_path)
         return jsonify({"success": True, "saved": saved})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1674,11 +1737,43 @@ def source_image_tool():
     paths = data.get('paths', [])
     tool = data.get('tool', '')
     params = data.get('params', {})
-    if not paths or tool not in ['crop', 'optimize', 'deskew', 'colorize', 'autofix', 'rotate']:
-        return jsonify({"error": "Invalid request"}), 400
+    scope = data.get('scope', 'selected')  # selected | folder
+    if tool not in ['crop', 'optimize', 'deskew', 'colorize', 'autofix', 'rotate', 'smart_crop', 'smart_rotate']:
+        return jsonify({"error": "Invalid tool"}), 400
+
     try:
-        task_ids = _image_tool_queue(paths, tool, params)
-        return jsonify({"success": True, "task_ids": task_ids})
+        # If no explicit selection, default to all images in current folder
+        if scope == 'folder' or not paths:
+            path = data.get('path', '')
+            target_dir = resolve_source_path(path)
+            if not os.path.isdir(target_dir):
+                return jsonify({"error": "Folder not found"}), 400
+            paths = []
+            for root, dirs, files in os.walk(target_dir):
+                for f in files:
+                    if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp')):
+                        full = os.path.join(root, f)
+                        paths.append(os.path.relpath(full, SOURCE_DIR).replace('\\', '/'))
+            if not paths:
+                return jsonify({"error": "No images in folder"}), 400
+        else:
+            paths = [p for p in paths if p.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'))]
+            if not paths:
+                return jsonify({"error": "Select image files"}), 400
+
+        # Map smart tools to base tool; pass smart flag in params
+        base_tool = tool
+        if tool == 'smart_crop':
+            base_tool = 'crop'
+            params = params or {}
+            params['mode'] = 'smart'
+        elif tool == 'smart_rotate':
+            base_tool = 'rotate'
+            params = params or {}
+            params['mode'] = 'smart'
+
+        task_ids = _image_tool_queue(paths, base_tool, params)
+        return jsonify({"success": True, "task_ids": task_ids, "image_count": len(paths)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1866,6 +1961,183 @@ def source_remove_empty_folders():
                     rel = os.path.relpath(root, SOURCE_DIR).replace('\\', '/')
                     errors.append(f"{rel}: {e}")
         return jsonify({"success": True, "removed": removed, "errors": errors})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/source/normalize', methods=['POST'])
+@login_required
+def source_normalize():
+    """
+    Normalize every source folder so it contains only images + canonical catalog files.
+    - Flatten subdirectories
+    - Merge .txt files into {folder}.ocr.txt
+    - Consolidate .mrc files to koha_import.mrc
+    - Consolidate .mrk files to {folder}.mrk
+    - Remove empty subdirectories
+    """
+    import re
+    flattened = []
+    merged_txt = []
+    consolidated_mrc = []
+    consolidated_mrk = []
+    removed_empty = []
+    errors = []
+
+    try:
+        for item in os.listdir(SOURCE_DIR):
+            folder_path = os.path.join(SOURCE_DIR, item)
+            if not os.path.isdir(folder_path):
+                continue
+            folder_name = os.path.basename(folder_path)
+            safe_name = re.sub(r'[^\w\s-]', '_', folder_name).strip()
+
+            # 1) Flatten subdirectories
+            for root, dirs, files in os.walk(folder_path, topdown=False):
+                if root == folder_path:
+                    continue
+                for f in files:
+                    src = os.path.join(root, f)
+                    dst = os.path.join(folder_path, f)
+                    if os.path.exists(dst):
+                        stem, ext = os.path.splitext(f)
+                        dst = os.path.join(folder_path, f"{stem}_{uuid.uuid4().hex[:6]}{ext}")
+                    try:
+                        shutil.move(src, dst)
+                        flattened.append(f"{os.path.relpath(src, SOURCE_DIR)} -> {os.path.relpath(dst, SOURCE_DIR)}")
+                    except Exception as e:
+                        errors.append(f"move {src}: {e}")
+                # Try to remove now-empty subdir
+                try:
+                    os.rmdir(root)
+                except Exception:
+                    pass
+
+            # 2) Merge .txt files into {folder}.ocr.txt
+            txt_files = [f for f in os.listdir(folder_path) if f.lower().endswith('.txt') and os.path.isfile(os.path.join(folder_path, f))]
+            if len(txt_files) > 1 or (txt_files and txt_files[0].lower() != f"{safe_name.lower()}.ocr.txt"):
+                canonical_txt = f"{folder_name}.ocr.txt"
+                canonical_path = os.path.join(folder_path, canonical_txt)
+                merged_content = []
+                for tf in sorted(txt_files):
+                    try:
+                        with open(os.path.join(folder_path, tf), 'r', encoding='utf-8', errors='ignore') as fh:
+                            merged_content.append(f"--- {tf} ---\n")
+                            merged_content.append(fh.read())
+                            merged_content.append("\n")
+                    except Exception as e:
+                        errors.append(f"read txt {tf}: {e}")
+                try:
+                    with open(canonical_path, 'w', encoding='utf-8') as fh:
+                        fh.write("".join(merged_content))
+                    for tf in txt_files:
+                        if tf != canonical_txt:
+                            try:
+                                os.remove(os.path.join(folder_path, tf))
+                            except Exception as e:
+                                errors.append(f"remove txt {tf}: {e}")
+                    merged_txt.append(f"{folder_name}: {len(txt_files)} txt files -> {canonical_txt}")
+                except Exception as e:
+                    errors.append(f"merge txt in {folder_name}: {e}")
+
+            # 3) Consolidate .mrc files -> keep koha_import.mrc, remove others
+            mrc_files = [f for f in os.listdir(folder_path) if f.lower().endswith('.mrc') and os.path.isfile(os.path.join(folder_path, f))]
+            if len(mrc_files) > 1:
+                keep = None
+                for mf in mrc_files:
+                    if mf.lower() == 'koha_import.mrc':
+                        keep = mf
+                        break
+                if not keep:
+                    keep = mrc_files[0]
+                for mf in mrc_files:
+                    if mf != keep:
+                        try:
+                            os.remove(os.path.join(folder_path, mf))
+                            consolidated_mrc.append(f"{folder_name}: removed {mf}")
+                        except Exception as e:
+                            errors.append(f"remove mrc {mf}: {e}")
+
+            # 4) Consolidate .mrk files -> keep {folder}.mrk, remove others
+            mrk_files = [f for f in os.listdir(folder_path) if f.lower().endswith('.mrk') and os.path.isfile(os.path.join(folder_path, f))]
+            if len(mrk_files) > 1:
+                canonical_mrk = f"{folder_name}.mrk"
+                keep = canonical_mrk if canonical_mrk in mrk_files else mrk_files[0]
+                for mf in mrk_files:
+                    if mf != keep:
+                        try:
+                            os.remove(os.path.join(folder_path, mf))
+                            consolidated_mrk.append(f"{folder_name}: removed {mf}")
+                        except Exception as e:
+                            errors.append(f"remove mrk {mf}: {e}")
+
+            # 5) Remove any remaining empty subdirectories
+            for root, dirs, files in os.walk(folder_path, topdown=False):
+                if root == folder_path:
+                    continue
+                try:
+                    os.rmdir(root)
+                    removed_empty.append(os.path.relpath(root, SOURCE_DIR).replace('\\', '/'))
+                except Exception:
+                    pass
+
+        return jsonify({
+            "success": True,
+            "flattened": flattened,
+            "merged_txt": merged_txt,
+            "consolidated_mrc": consolidated_mrc,
+            "consolidated_mrk": consolidated_mrk,
+            "removed_empty": removed_empty,
+            "errors": errors
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/source/stats', methods=['GET'])
+@login_required
+def source_stats():
+    """Return aggregate counts for source folders, images, and file types."""
+    stats = {
+        "folders": 0,
+        "images": 0,
+        "original_images": 0,
+        "ocr_ready": 0,
+        "metadata_ready": 0,
+        "mrc_ready": 0,
+        "koha_import_ready": 0,
+        "file_types": {},
+        "top_folders": []
+    }
+    try:
+        folder_list = []
+        for item in os.listdir(SOURCE_DIR):
+            item_path = os.path.join(SOURCE_DIR, item)
+            if not os.path.isdir(item_path):
+                continue
+            stats["folders"] += 1
+            status = _folder_catalog_status(item_path)
+            stats["images"] += status.get("image_count", 0)
+            if status.get("has_originals"):
+                stats["original_images"] += 1
+            if status.get("has_ocr"):
+                stats["ocr_ready"] += 1
+            if status.get("has_metadata"):
+                stats["metadata_ready"] += 1
+            if status.get("has_mrc"):
+                stats["mrc_ready"] += 1
+            if status.get("has_koha_import"):
+                stats["koha_import_ready"] += 1
+            folder_list.append({"name": item, "status": status})
+
+        # File type counts
+        for root, dirs, files in os.walk(SOURCE_DIR):
+            for f in files:
+                ext = f.split('.')[-1].lower() if '.' in f else 'no_ext'
+                stats["file_types"][ext] = stats["file_types"].get(ext, 0) + 1
+
+        stats["top_folders"] = folder_list[:20]
+        return jsonify({"success": True, "stats": stats})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -2276,6 +2548,59 @@ def _ensure_original(input_path):
     return original_path
 
 
+def _smart_crop_bbox(img):
+    """Detect content boundaries using adaptive threshold + contour logic."""
+    import numpy as np
+    from PIL import ImageOps
+    try:
+        gray = img.convert('L')
+        # Increase contrast and invert so text/content is dark
+        arr = np.array(ImageOps.autocontrast(gray))
+        # Adaptive threshold: content darker than local mean
+        from scipy.ndimage import uniform_filter
+        mean = uniform_filter(arr.astype(float), size=15, mode='constant')
+        binary = (arr < (mean - 10)).astype(np.uint8) * 255
+        # Find bounding box of content
+        rows = np.any(binary > 0, axis=1)
+        cols = np.any(binary > 0, axis=0)
+        if not rows.any() or not cols.any():
+            return None
+        top = np.argmax(rows)
+        bottom = len(rows) - np.argmax(rows[::-1])
+        left = np.argmax(cols)
+        right = len(cols) - np.argmax(cols[::-1])
+        # Add small padding
+        w, h = img.size
+        pad = 5
+        return (max(0, left - pad), max(0, top - pad), min(w, right + pad), min(h, bottom + pad))
+    except Exception:
+        return None
+
+
+def _detect_text_angle(img):
+    """Detect skew angle of text using projection profile over fine range."""
+    import numpy as np
+    try:
+        gray = img.convert('L')
+        arr = np.array(gray)
+        # Binarize
+        from scipy.ndimage import uniform_filter
+        mean = uniform_filter(arr.astype(float), size=15, mode='constant')
+        binary = (arr < (mean - 5)).astype(np.uint8) * 255
+        best_angle = 0
+        best_score = 0
+        for angle in np.arange(-10, 10.5, 0.5):
+            rotated = np.array(gray.rotate(angle, expand=True, fillcolor=255))
+            proj = rotated.sum(axis=1)
+            score = np.var(proj)
+            if score > best_score:
+                best_score = score
+                best_angle = angle
+        return best_angle
+    except Exception:
+        return 0
+
+
 def process_image_tool(input_path, tool, params=None):
     import os, shutil, json
     from PIL import Image, ImageEnhance, ImageFilter
@@ -2300,13 +2625,23 @@ def process_image_tool(input_path, tool, params=None):
             img.save(input_path)
         elif tool == 'crop':
             img = Image.open(input_path)
-            bbox = img.convert('RGB').getbbox()
+            mode = params.get('mode', 'auto')
+            if mode == 'smart':
+                bbox = _smart_crop_bbox(img)
+            else:
+                bbox = img.convert('RGB').getbbox()
             if bbox:
                 img.crop(bbox).save(input_path)
         elif tool == 'rotate':
-            angle = float(params.get('angle', 90))
+            mode = params.get('mode', 'manual')
+            if mode == 'smart':
+                img = Image.open(input_path).convert('RGB')
+                angle = _detect_text_angle(img)
+            else:
+                angle = float(params.get('angle', 90))
             img = Image.open(input_path).convert('RGB')
-            img = img.rotate(-angle, expand=True, fillcolor=(255, 255, 255))
+            if abs(angle) > 0.1:
+                img = img.rotate(-angle, expand=True, fillcolor=(255, 255, 255))
             img.save(input_path)
         elif tool == 'colorize':
             img = Image.open(input_path).convert('RGB')
