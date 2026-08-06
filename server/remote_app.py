@@ -1061,6 +1061,12 @@ def ai_worker_loop():
             
         time.sleep(3)
 
+# Start the worker daemon
+import threading
+worker_thread = threading.Thread(target=ai_worker_loop, daemon=True)
+worker_thread.start()
+logging.info("Background AI Worker Thread started.")
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5050)
 
