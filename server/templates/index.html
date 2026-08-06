@@ -108,15 +108,20 @@
         }
         
         body { font-family: 'Dosis', sans-serif; background-color: var(--bg-color); color: var(--text-main); margin: 0; padding: 0; }
-        .navbar { background: var(--card-bg); padding: 15px 30px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border-bottom: 3px solid var(--primary); }
-        .navbar h1 { margin: 0; color: var(--primary); font-size: 2rem; font-weight: 700; display: flex; gap: 20px; align-items: center;}
         
-        .nav-tabs { display: flex; gap: 10px; }
-        .nav-tab { padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; color: var(--text-light); transition: 0.2s; }
-        .nav-tab.active { background: #fdf4ff; color: var(--primary); }
-        .nav-tab:hover:not(.active) { background: #f3f4f6; }
+        .navbar { background: var(--card-bg); display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border-bottom: 4px solid var(--primary); position: sticky; top: 0; z-index: 1000; padding: 0 20px; height: 70px; }
+        .nav-brand { display: flex; align-items: center; gap: 15px; color: var(--primary); font-size: 1.8rem; font-weight: 700; }
+        .nav-brand img { height: 40px; }
         
-        .user-info { font-weight: 600; color: var(--text-light); }
+        .nav-tabs { display: flex; gap: 5px; height: 100%; align-items: center; margin-bottom: -4px; /* offset border */ }
+        .nav-tab { height: 100%; padding: 0 20px; display: flex; align-items: center; cursor: pointer; font-weight: 600; color: var(--text-light); transition: all 0.2s; border-bottom: 4px solid transparent; font-size: 1.1rem; }
+        .nav-tab.active { color: var(--primary); border-bottom-color: var(--primary); background: #fdf4ff; }
+        .nav-tab:hover:not(.active) { background: #f3f4f6; color: var(--text-main); }
+        
+        .user-info { display: flex; align-items: center; gap: 15px; font-weight: 600; color: var(--text-light); }
+        .logout-btn { padding: 6px 15px; border-radius: 20px; background: #fee2e2; color: #dc2626; text-decoration: none; font-size: 0.9rem; transition: background 0.2s; }
+        .logout-btn:hover { background: #fca5a5; color: white; }
+
 
         .container { max-width: 1600px; margin: 30px auto; padding: 0 20px; }
         
@@ -198,21 +203,36 @@
     </style>
 </head>
 <body>
+    
     <nav class="navbar">
-        <h1>
-            Sothik IT Portal
-            <div class="nav-tabs">
-                <div class="nav-tab active" onclick="switchTab('ai')">AI Upload</div>
-                <div class="nav-tab" onclick="switchTab('browser')">Catalog Browser</div>
-                <div class="nav-tab" onclick="switchTab('labels')">Label Batch</div>
-                <div class="nav-tab" onclick="switchTab('queue')">Queue Monitor</div>
-                <div class="nav-tab" onclick="switchTab('settings')">Settings</div>
+        <div class="nav-brand">
+            <!-- Sothik IT Logo -->
+            <svg viewBox="0 0 24 24" width="32" height="32" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="css-i6dzq1"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+            Sothik IT
+        </div>
+        <div class="nav-tabs">
+            <div class="nav-tab active" onclick="switchTab('ai')">
+                <span style="margin-right:8px;">📁</span> AI Upload
             </div>
-        </h1>
+            <div class="nav-tab" onclick="switchTab('browser')">
+                <span style="margin-right:8px;">🔍</span> Catalog
+            </div>
+            <div class="nav-tab" onclick="switchTab('labels')">
+                <span style="margin-right:8px;">🏷️</span> Label Batch
+            </div>
+            <div class="nav-tab" onclick="switchTab('queue')">
+                <span style="margin-right:8px;">⚡</span> Queue Monitor
+            </div>
+            <div class="nav-tab" onclick="switchTab('settings')">
+                <span style="margin-right:8px;">⚙️</span> Settings
+            </div>
+        </div>
         <div class="user-info">
-            Logged in as: {{ user }} | <a href="/koha_editor/logout" style="color:var(--primary); text-decoration:none;">Logout</a>
+            <span>👤 {{ user }}</span>
+            <a href="/koha_editor/logout" class="logout-btn">Logout</a>
         </div>
     </nav>
+
 
     <div class="container">
         
