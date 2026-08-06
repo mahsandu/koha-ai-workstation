@@ -764,6 +764,48 @@
         }
         function setFilter(issue) { let sel = document.getElementById('filter-select'); if(![...sel.options].some(o => o.value === issue)) sel.add(new Option(issue.replace('_', ' '), issue)); sel.value = issue; currentPage = 1; loadRecords(); }
 
+        
+        function toggleSelectAll(checked) {
+            document.querySelectorAll('.row-checkbox').forEach(cb => cb.checked = checked);
+            updateSelectionCount();
+        }
+        
+        function updateSelectionCount() {
+            const selected = document.querySelectorAll('.row-checkbox:checked').length;
+            const bar = document.getElementById('batch-action-bar');
+            document.getElementById('batch-count').textContent = selected;
+            bar.style.display = selected > 0 ? 'flex' : 'none';
+            if(selected === 0 && document.getElementById('selectAllCheckbox')) document.getElementById('selectAllCheckbox').checked = false;
+        }
+        
+        async function submitBatchFix() {
+            const checkboxes = document.querySelectorAll('.row-checkbox:checked');
+            const biblionumbers = Array.from(checkboxes).map(cb => cb.value);
+            
+            if(biblionumbers.length === 0) return;
+            
+            const fix_type = document.getElementById('batch-fix-type').value;
+            const ai_model = document.getElementById('batch-ai-model').value;
+            
+            try {
+                const res = await fetch('/koha_editor/api/queue/batch', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ biblionumbers, fix_type, ai_model })
+                });
+                const data = await res.json();
+                if(data.success) {
+                    alert(`Successfully queued ${data.queued} items for AI processing!`);
+                    toggleSelectAll(false);
+                    switchTab('queue');
+                } else {
+                    alert(data.error || "Failed to queue items");
+                }
+            } catch(e) {
+                alert("Network error occurred.");
+            }
+        }
+
         async function loadRecords() {
             const filter = document.getElementById('filter-select').value;
             const qk = document.getElementById('search-keyword').value;

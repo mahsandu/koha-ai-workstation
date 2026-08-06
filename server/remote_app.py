@@ -84,6 +84,16 @@ def get_db_connection():
 
 
 def init_db():
+    import sqlite3
+    sq_conn = sqlite3.connect(SQLITE_DB)
+    try:
+        sq_conn.execute("ALTER TABLE ai_task_queue ADD COLUMN task_config TEXT")
+        sq_conn.commit()
+    except:
+        pass
+    finally:
+        sq_conn.close()
+        
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -822,6 +832,38 @@ def get_dashboard_stats():
         "q_stats": q_stats
     })
 
+
+@app.route('/api/queue/batch', methods=['POST'])
+@login_required
+def batch_queue():
+    data = request.json
+    biblionumbers = data.get('biblionumbers', [])
+    fix_type = data.get('fix_type', 'full')
+    ai_model = data.get('ai_model', 'deepseek')
+    
+    if not biblionumbers:
+        return jsonify({"error": "No items selected"}), 400
+        
+    import uuid, sqlite3, json
+    sq_conn = sqlite3.connect(SQLITE_DB)
+    sq_c = sq_conn.cursor()
+    
+    count = 0
+    task_config = json.dumps({"fix_type": fix_type, "ai_model": ai_model})
+    
+    for bib in biblionumbers:
+        sq_c.execute("SELECT task_id FROM ai_task_queue WHERE type='db_fix' AND biblionumber=? AND status IN ('pending', 'processing')", (bib,))
+        if not sq_c.fetchone():
+            task_id = str(uuid.uuid4())
+            sq_c.execute("INSERT INTO ai_task_queue (task_id, type, status, biblionumber, images, task_config) VALUES (?, ?, ?, ?, ?, ?)",
+                         (task_id, 'db_fix', 'pending', bib, '', task_config))
+            count += 1
+            
+    sq_conn.commit()
+    sq_conn.close()
+    
+    return jsonify({"success": True, "queued": count})
+
 # --- IMAGE UPLOADS ---
 @app.route('/api/upload', methods=['POST'])
 @login_required
@@ -959,23 +1001,43 @@ def ai_worker_loop():
                         if not raw_text.strip():
                             raw_text = "UNKNOWN TEXT"
                             
-                    if is_db_fix:
-                        prompt = f"Fix the missing catalog metadata for this book. Output strictly as JSON with keys: title, author, publishercode, publicationyear, isbn, ddc, subjects. Guess missing data (like author and DDC) based on the title. Do not include any other text.\n\nBook Info:\n{raw_text}"
-                    else:
-                        prompt = f"Extract metadata from the following OCR text of a book cover/title page. Output strictly as JSON with keys: title, author, publishercode, publicationyear, isbn, ddc, subjects.\nDo not include any other text.\n\nText:\n{raw_text}"
-                        
-                    ollama_payload = {"model": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B", "messages": [{"role": "user", "content": prompt}], "temperature": 0.0}
-                    
+                    import json
+                    task_config_str = task.get('task_config', '{}') if 'task_config' in task.keys() else '{}'
                     try:
-                        res = requests.post('http://localhost:8000/v1/chat/completions', json=ollama_payload, timeout=30)
-                        ai_text = res.json()['choices'][0]['message']['content']
+                        task_config = json.loads(task_config_str) if task_config_str else {}
                     except:
+                        task_config = {}
+                        
+                    fix_type = task_config.get('fix_type', 'full')
+                    ai_model = task_config.get('ai_model', 'deepseek')
+                    
+                    if is_db_fix:
+                        if fix_type == 'metadata':
+                            prompt = f"Fix missing basic metadata. Output JSON with keys: title, author, publishercode, publicationyear, isbn.\nDo not output anything else.\n\nBook Info:\n{raw_text}"
+                        elif fix_type == 'classification':
+                            prompt = f"Classify this book. Output JSON with keys: ddc, subjects.\nDo not output anything else.\n\nBook Info:\n{raw_text}"
+                        else:
+                            prompt = f"Fix all missing catalog metadata. Output JSON with keys: title, author, publishercode, publicationyear, isbn, ddc, subjects.\nDo not output anything else.\n\nBook Info:\n{raw_text}"
+                    else:
+                        prompt = f"Extract metadata from OCR text. Output JSON with keys: title, author, publishercode, publicationyear, isbn, ddc, subjects.\nDo not output anything else.\n\nText:\n{raw_text}"
+                        
+                    ai_text = ""
+                    if ai_model == 'gemini' or ai_model == 'openai':
+                        ai_text = '{"title": "Cloud APIs Not Configured", "author": "Please configure API Keys"}'
+                    elif ai_model == 'qwen':
                         try:
-                            ollama_payload_fallback = {"model": "qwen2.5", "prompt": prompt, "stream": False}
-                            res = requests.post('http://localhost:11434/api/generate', json=ollama_payload_fallback, timeout=30)
+                            payload = {"model": "qwen2.5", "prompt": prompt, "stream": False}
+                            res = requests.post('http://localhost:11434/api/generate', json=payload, timeout=30)
                             ai_text = res.json().get('response', '')
-                        except Exception as e:
-                            ai_text = '{"title": "AI Offline", "author": "Check Server"}'
+                        except:
+                            ai_text = '{"title": "Qwen Offline", "author": "Check Server"}'
+                    else:
+                        try:
+                            payload = {"model": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B", "messages": [{"role": "user", "content": prompt}], "temperature": 0.0}
+                            res = requests.post('http://localhost:8000/v1/chat/completions', json=payload, timeout=30)
+                            ai_text = res.json()['choices'][0]['message']['content']
+                        except:
+                            ai_text = '{"title": "DeepSeek Offline", "author": "Check Server"}'
                     
                     ai_text = re.sub(r'<think>.*?</think>', '', ai_text, flags=re.DOTALL).strip()
                     json_match = re.search(r'\{.*?\}', ai_text, flags=re.DOTALL)
