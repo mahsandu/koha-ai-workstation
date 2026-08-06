@@ -1683,6 +1683,205 @@ def source_image_tool():
         return jsonify({"error": str(e)}), 500
 
 
+def _queue_pipeline_tasks(image_paths, run_ocr=True, run_meta=True, run_mrc=True):
+    """Queue OCR, metadata, and MRC tasks for a list of image paths."""
+    import sqlite3
+    conn = sqlite3.connect(SQLITE_DB)
+    try:
+        cursor = conn.cursor()
+        queued = {'ocr': [], 'meta': [], 'mrc': []}
+        ocr_targets = []
+        for p in image_paths:
+            target = resolve_source_path(p)
+            if not os.path.exists(target) or not target.lower().endswith(('.jpg', '.jpeg', '.png')):
+                continue
+            ocr_targets.append(target)
+
+        if run_ocr and ocr_targets:
+            for target in ocr_targets:
+                task_id = f"ocr_{uuid.uuid4().hex[:12]}"
+                cursor.execute(
+                    "INSERT INTO ai_task_queue (task_id, type, status, images, result_data) VALUES (?, ?, ?, ?, ?)",
+                    (task_id, 'source_ocr', 'pending', target, '')
+                )
+                queued['ocr'].append(task_id)
+
+        if run_meta and ocr_targets:
+            for target in ocr_targets:
+                txt_path = target + '.ocr.txt'
+                task_id = f"meta_{uuid.uuid4().hex[:12]}"
+                cursor.execute(
+                    "INSERT INTO ai_task_queue (task_id, type, status, images, result_data) VALUES (?, ?, ?, ?, ?)",
+                    (task_id, 'source_meta', 'pending', txt_path if os.path.exists(txt_path) else target, '')
+                )
+                queued['meta'].append(task_id)
+
+        if run_mrc:
+            # Look for existing JSON files paired with these images/folders
+            json_candidates = set()
+            for p in image_paths:
+                base = os.path.splitext(resolve_source_path(p))[0]
+                for ext in ['.json']:
+                    candidate = base + ext
+                    if os.path.exists(candidate):
+                        json_candidates.add(candidate)
+                folder = os.path.dirname(resolve_source_path(p))
+                for f in os.listdir(folder) if os.path.isdir(folder) else []:
+                    if f.lower().endswith('.json'):
+                        json_candidates.add(os.path.join(folder, f))
+            for jpath in json_candidates:
+                task_id = f"mrc_{uuid.uuid4().hex[:12]}"
+                cursor.execute(
+                    "INSERT INTO ai_task_queue (task_id, type, status, images, result_data) VALUES (?, ?, ?, ?, ?)",
+                    (task_id, 'source_mrc', 'pending', jpath, '')
+                )
+                queued['mrc'].append(task_id)
+
+        conn.commit()
+        return queued
+    finally:
+        conn.close()
+
+
+@app.route('/api/source/organize', methods=['POST'])
+@login_required
+def source_organize():
+    """
+    Merge duplicate folders ending with _output into their base folder and move
+    loose files into matching folders (e.g. '1234 p1' or '1234 p1_output').
+    """
+    import re, shutil
+    merged = []
+    moved = []
+    errors = []
+
+    try:
+        for item in os.listdir(SOURCE_DIR):
+            item_path = os.path.join(SOURCE_DIR, item)
+            if not os.path.isdir(item_path):
+                continue
+            m = re.match(r'^(.+)\s*_output$', item, flags=re.IGNORECASE)
+            if not m:
+                continue
+            base_name = m.group(1).strip()
+            base_path = os.path.join(SOURCE_DIR, base_name)
+            if not os.path.isdir(base_path):
+                # No base folder; rename _output folder to base name
+                try:
+                    os.rename(item_path, base_path)
+                    merged.append(f"{item} -> {base_name}")
+                except Exception as e:
+                    errors.append(f"rename {item}: {e}")
+                continue
+            # Merge contents from _output into base
+            try:
+                for root, dirs, files in os.walk(item_path):
+                    rel = os.path.relpath(root, item_path)
+                    dest_dir = base_path if rel == '.' else os.path.join(base_path, rel)
+                    os.makedirs(dest_dir, exist_ok=True)
+                    for f in files:
+                        src = os.path.join(root, f)
+                        dst = os.path.join(dest_dir, f)
+                        # Avoid overwrite collisions by appending a suffix
+                        if os.path.exists(dst):
+                            stem, ext = os.path.splitext(f)
+                            dst = os.path.join(dest_dir, f"{stem}_{uuid.uuid4().hex[:6]}{ext}")
+                        shutil.move(src, dst)
+                    for d in dirs:
+                        os.makedirs(os.path.join(dest_dir, d), exist_ok=True)
+                # Remove empty _output tree
+                shutil.rmtree(item_path)
+                merged.append(f"{item} into {base_name}")
+            except Exception as e:
+                errors.append(f"merge {item}: {e}")
+
+        # Second pass: move loose files into matching folders
+        folder_names = [n for n in os.listdir(SOURCE_DIR) if os.path.isdir(os.path.join(SOURCE_DIR, n))]
+        for item in os.listdir(SOURCE_DIR):
+            item_path = os.path.join(SOURCE_DIR, item)
+            if os.path.isdir(item_path):
+                continue
+            # Find best matching folder by longest name prefix
+            best = None
+            for fname in folder_names:
+                clean = re.sub(r'\s*_output$', '', fname, flags=re.IGNORECASE).strip()
+                if item.startswith(clean) or item.lower().startswith(clean.lower()):
+                    if best is None or len(clean) > len(best[0]):
+                        best = (clean, fname)
+            if best:
+                dest_dir = os.path.join(SOURCE_DIR, best[1])
+                try:
+                    dst = os.path.join(dest_dir, item)
+                    if os.path.exists(dst):
+                        stem, ext = os.path.splitext(item)
+                        dst = os.path.join(dest_dir, f"{stem}_{uuid.uuid4().hex[:6]}{ext}")
+                    shutil.move(item_path, dst)
+                    moved.append(f"{item} -> {best[1]}")
+                except Exception as e:
+                    errors.append(f"move {item}: {e}")
+
+        return jsonify({"success": True, "merged": merged, "moved": moved, "errors": errors})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/source/batch_process', methods=['POST'])
+@login_required
+def source_batch_process():
+    data = request.json
+    scope = data.get('scope', 'folder')
+    path = data.get('path', '')
+    run_ocr = data.get('ocr', True)
+    run_meta = data.get('meta', True)
+    run_mrc = data.get('mrc', True)
+
+    image_paths = []
+    try:
+        if scope == 'folder':
+            target_dir = resolve_source_path(path)
+            if not os.path.isdir(target_dir):
+                return jsonify({"error": "Folder not found"}), 400
+            for root, dirs, files in os.walk(target_dir):
+                for f in files:
+                    if f.lower().endswith(('.jpg', '.jpeg', '.png')):
+                        full = os.path.join(root, f)
+                        image_paths.append(os.path.relpath(full, SOURCE_DIR).replace('\\', '/'))
+        else:
+            for item in os.listdir(SOURCE_DIR):
+                item_path = os.path.join(SOURCE_DIR, item)
+                if not os.path.isdir(item_path):
+                    continue
+                for root, dirs, files in os.walk(item_path):
+                    for f in files:
+                        if f.lower().endswith(('.jpg', '.jpeg', '.png')):
+                            full = os.path.join(root, f)
+                            image_paths.append(os.path.relpath(full, SOURCE_DIR).replace('\\', '/'))
+
+        if not image_paths:
+            return jsonify({"error": "No images found"}), 400
+
+        # Queue auto image fixes first: crop, deskew, autofix, optimize
+        fix_tools = ['crop', 'deskew', 'autofix', 'optimize']
+        for tool in fix_tools:
+            _image_tool_queue(image_paths, tool)
+
+        # Queue pipeline (OCR, meta, MRC)
+        queued = _queue_pipeline_tasks(image_paths, run_ocr, run_meta, run_mrc)
+
+        report = []
+        if image_paths:
+            report.append(f"{len(image_paths)} images queued for auto-fix")
+        if queued.get('ocr'):
+            report.append(f"{len(queued['ocr'])} OCR tasks")
+        if queued.get('meta'):
+            report.append(f"{len(queued['meta'])} meta tasks")
+        if queued.get('mrc'):
+            report.append(f"{len(queued['mrc'])} MRC tasks")
+        return jsonify({"success": True, "report": report, "image_count": len(image_paths)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # --- END SOURCE EXPLORER ---
 
 
@@ -1963,6 +2162,11 @@ def ai_worker_loop():
                         except:
                             pass
                             
+                    # If every engine failed, don't treat the heuristic placeholder as a real fix.
+                    # Mark the task error so it can be retried once an AI engine is available.
+                    if engine_used == 'heuristic':
+                        raise RuntimeError(f"AI unavailable; heuristic fallback not saved. {ai_warning}")
+
                     result_data = {
                         "title": ai_json.get("title", ""),
                         "author": ai_json.get("author", ""),

@@ -528,8 +528,8 @@
         <div id="tab-sources" class="tab-content" style="height:calc(100vh - 150px);">
             <div style="display: flex; height: 100%; gap: 15px;">
                 <!-- Left Pane: File Browser -->
-                <div style="flex: 0 0 340px; background: var(--bg-card); padding: 15px; border-radius: 8px; border: 1px solid var(--border-color); overflow-y: auto; display: flex; flex-direction: column;">
-                    <div style="display: flex; justify-content: space-between; margin-bottom: 15px; align-items:center;">
+                <div style="flex: 0 0 360px; background: var(--bg-card); padding: 15px; border-radius: 8px; border: 1px solid var(--border-color); overflow-y: auto; display: flex; flex-direction: column;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 10px; align-items:center;">
                         <h2 style="margin: 0; font-size: 1.2rem;">File Browser</h2>
                         <div style="display:flex; gap:5px;">
                             <button class="btn btn-outline btn-small" onclick="createSourceFolder()">+ Folder</button>
@@ -538,6 +538,11 @@
                                 <input type="file" id="source-upload-input" multiple style="display:none" onchange="uploadSourceFiles(this.files)">
                             </label>
                         </div>
+                    </div>
+                    <!-- Organizer toolbar -->
+                    <div style="display:flex; gap:5px; margin-bottom:10px; flex-wrap:wrap;">
+                        <button class="btn btn-outline btn-small" onclick="organizeSources()" title="Merge _output folders and move loose files">🧹 Organize</button>
+                        <button class="btn btn-outline btn-small" onclick="batchProcessImages()" title="Auto-crop, deskew, rotate, OCR and extract metadata for all image folders">⚡ Batch Image Fix</button>
                     </div>
                     <div style="margin-bottom: 10px; font-family: monospace; background: #fdfdfd; border:1px solid var(--border-color); padding: 5px; border-radius: 4px;" id="source-current-path">/</div>
                     <div style="margin-bottom: 5px;">
@@ -586,6 +591,10 @@
                         <button class="btn btn-outline btn-small" onclick="actionProcessMeta()">2. Extract Meta</button>
                         <button class="btn btn-outline btn-small" onclick="actionGenerateMrc()">3. Generate MRC</button>
                         <button class="btn btn-outline btn-small" onclick="actionStageKoha()">4. Stage to Koha</button>
+                        <div class="toolbar-divider"></div>
+                        <span class="toolbar-label">Batch:</span>
+                        <button class="btn btn-small" style="background:#8b5cf6;" onclick="batchProcessCurrentFolder()" title="Auto-fix all images in current folder: crop, deskew, rotate, optimize, OCR, meta, MRC">⚡ Auto Fix Folder</button>
+                        <button class="btn btn-small" style="background:#059669;" onclick="batchProcessAllFolders()" title="Run auto-fix pipeline on every source folder">⚡ Auto Fix All Folders</button>
                     </div>
                 </div>
             </div>
@@ -1212,6 +1221,55 @@
                     actionImageTool('rotate', {angle: angle});
                 }, 'Rotate', true);
             setTimeout(() => { const el = document.getElementById('rotate-angle'); if(el) el.focus(); }, 50);
+        }
+
+        // --- BATCH ORGANIZER & IMAGE PROCESSING ---
+
+        async function organizeSources() {
+            const res = await fetch('/koha_editor/api/source/organize', {method: 'POST', headers: {'Content-Type':'application/json'}});
+            const data = await res.json();
+            if(data.success) {
+                showAlert(`Organized: ${(data.merged || []).length} folders merged, ${(data.moved || []).length} files moved.\n${(data.errors || []).join('\n')}`);
+                loadSourceFolder(currentSourcePath);
+            } else { showAlert("Error: " + data.error); }
+        }
+
+        async function batchProcessImages() {
+            openAppModal('Batch Image Processing',
+                `<p>This will enqueue auto-crop, deskew, auto-rotate, optimize, OCR, metadata extraction and MRC generation for every source folder.</p>
+                 <label><input type="checkbox" id="batch-ocr" checked> Run OCR</label><br>
+                 <label><input type="checkbox" id="batch-meta" checked> Extract Metadata</label><br>
+                 <label><input type="checkbox" id="batch-mrc" checked> Generate MRC</label>`,
+                async () => {
+                    const ocr = document.getElementById('batch-ocr').checked;
+                    const meta = document.getElementById('batch-meta').checked;
+                    const mrc = document.getElementById('batch-mrc').checked;
+                    const res = await fetch('/koha_editor/api/source/batch_process', {
+                        method: 'POST', headers: {'Content-Type':'application/json'},
+                        body: JSON.stringify({scope: 'all', ocr, meta, mrc})
+                    });
+                    const data = await res.json();
+                    showAlert(data.success ? `Batch queued. ${(data.report || []).join(', ')}` : "Error: " + data.error);
+                }, 'Queue All', true);
+        }
+
+        async function batchProcessCurrentFolder() {
+            if(!currentSourcePath) { showAlert("Open a folder first."); return; }
+            const res = await fetch('/koha_editor/api/source/batch_process', {
+                method: 'POST', headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({scope: 'folder', path: currentSourcePath, ocr: true, meta: true, mrc: true})
+            });
+            const data = await res.json();
+            showAlert(data.success ? `Folder auto-fix queued. ${(data.report || []).join(', ')}` : "Error: " + data.error);
+        }
+
+        async function batchProcessAllFolders() {
+            const res = await fetch('/koha_editor/api/source/batch_process', {
+                method: 'POST', headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({scope: 'all', ocr: true, meta: true, mrc: true})
+            });
+            const data = await res.json();
+            showAlert(data.success ? `All folders auto-fix queued. ${(data.report || []).join(', ')}` : "Error: " + data.error);
         }
 
                 // --- QUEUE MONITOR ---
