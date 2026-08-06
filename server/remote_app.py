@@ -331,7 +331,7 @@ def get_records():
         with conn.cursor() as cursor:
             query = """
                 SELECT 
-                    b.biblionumber, i.barcode, i.itemcallnumber, b.title, b.author, bi.publishercode, bi.publicationyear, bi.pages
+                    b.biblionumber, i.barcode, i.itemcallnumber, b.title, b.author, bi.publishercode, bi.publicationyear, bi.pages, b.datecreated
                 FROM koha_mfa.items i
                 LEFT JOIN koha_mfa.biblio b ON i.biblionumber = b.biblionumber
                 LEFT JOIN koha_mfa.biblioitems bi ON i.biblioitemnumber = bi.biblioitemnumber
@@ -377,6 +377,13 @@ def get_records():
                 
                 if filter_type == 'garbled' and not is_bad:
                     continue
+                if filter_type == 'broken' and len(reasons) == 0:
+                    continue
+                if filter_type == 'today':
+                    import datetime
+                    if not row['datecreated'] or row['datecreated'].date() != datetime.date.today():
+                        continue
+                
                 if issue_type and issue_type != 'all' and issue_type not in reasons:
                     continue
                     
