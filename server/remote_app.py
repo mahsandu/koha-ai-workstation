@@ -2382,14 +2382,53 @@ def get_queue_list():
 
 # --- BACKGROUND AI WORKER ---
 
+def _check_stalled_tasks(timeout_seconds=120):
+    """Mark long-processing tasks as error so they can be retried or requeued."""
+    import datetime
+    try:
+        conn = sqlite3.connect(SQLITE_DB)
+        c = conn.cursor()
+        since = (datetime.datetime.now() - datetime.timedelta(seconds=timeout_seconds)).isoformat()
+        c.execute("""
+            UPDATE ai_task_queue SET status = 'error', result_data = ?
+            WHERE status = 'processing' AND created_at < ?
+        """, (json.dumps({"error": "Task timed out while processing"}), since))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logging.error(f"Stalled task check failed: {e}")
+
+
 def ai_worker_loop():
     import json
     while True:
         try:
+            _check_stalled_tasks(timeout_seconds=180)
+
             sq_conn = sqlite3.connect(SQLITE_DB)
             sq_conn.row_factory = sqlite3.Row
             sq_c = sq_conn.cursor()
-            sq_c.execute("SELECT * FROM ai_task_queue WHERE status = 'pending' LIMIT 1")
+            # Prioritize source/image tasks first, then db_fix, then other tasks
+            sq_c.execute("""
+                SELECT * FROM ai_task_queue
+                WHERE status = 'pending'
+                ORDER BY
+                    CASE type
+                        WHEN 'image_crop' THEN 1
+                        WHEN 'image_rotate' THEN 2
+                        WHEN 'image_deskew' THEN 3
+                        WHEN 'image_autofix' THEN 4
+                        WHEN 'image_optimize' THEN 5
+                        WHEN 'source_ocr' THEN 6
+                        WHEN 'source_meta' THEN 7
+                        WHEN 'source_mrc' THEN 8
+                        WHEN 'source_stage' THEN 9
+                        WHEN 'db_fix' THEN 10
+                        ELSE 11
+                    END,
+                    created_at ASC
+                LIMIT 1
+            """)
             task = sq_c.fetchone()
             
             if task:
@@ -2719,16 +2758,38 @@ def _detect_skew(img):
 # Start the worker daemon
 import threading
 
+def _background_batch_retry():
+    """Periodically retry pending tasks that have been waiting too long."""
+    import datetime
+    try:
+        conn = sqlite3.connect(SQLITE_DB)
+        c = conn.cursor()
+        # Requeue tasks stuck in error for more than 5 minutes and originally pending for more than 10 minutes
+        since_error = (datetime.datetime.now() - datetime.timedelta(minutes=5)).isoformat()
+        c.execute("""
+            UPDATE ai_task_queue SET status = 'pending', result_data = NULL
+            WHERE status = 'error'
+              AND created_at < ?
+              AND (result_data IS NULL OR result_data NOT LIKE '%heuristic fallback not saved%')
+        """, (since_error,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logging.error(f"Batch retry check failed: {e}")
+
+
 def source_worker_loop():
     import json, base64, requests, os, uuid, time
 
     while True:
         try:
-            sq_conn = sqlite3.connect(SQLITE_DB)
-            sq_conn.row_factory = sqlite3.Row
-            sq_c = sq_conn.cursor()
-            sq_c.execute("SELECT * FROM ai_task_queue WHERE type IN ('source_ocr', 'source_meta', 'source_mrc', 'source_stage', 'image_crop', 'image_optimize', 'image_deskew', 'image_colorize', 'image_autofix', 'image_rotate') AND status = 'pending' LIMIT 1")
-            task = sq_c.fetchone()
+            # Source/image tasks are now handled by ai_worker_loop with priority ordering.
+            # This loop only runs periodic maintenance: stalled-task timeout and auto-retry.
+            _check_stalled_tasks(timeout_seconds=180)
+            _background_batch_retry()
+            time.sleep(10)
+            continue
+
 
             if task:
                 task_id = task['task_id']
@@ -2849,12 +2910,12 @@ def source_worker_loop():
                 sq_conn.close()
         except Exception as ex:
             logging.error(f"Source Worker Loop Error: {ex}")
-            
+
         time.sleep(3)
 
 source_thread = threading.Thread(target=source_worker_loop, daemon=True)
 source_thread.start()
-logging.info("Source Explorer Worker Thread started.")
+logging.info("Source Explorer maintenance thread started.")
 
 
 worker_thread = threading.Thread(target=ai_worker_loop, daemon=True)
