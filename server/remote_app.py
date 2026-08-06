@@ -9,7 +9,7 @@ import requests
 import base64
 import re
 import logging
-from flask import Flask, jsonify, render_template, request, session, redirect, url_for, send_from_directory
+from flask import Flask, jsonify, render_template, request, session, redirect, url_for, send_from_directory, Blueprint
 
 # Setup server logging
 logging.basicConfig(filename='/var/www/koha_editor/app.log', level=logging.INFO, 
@@ -19,7 +19,11 @@ import pymysql
 import sqlite3
 
 app = Flask(__name__)
+
+# Blueprint for Browse Sources APIs
+sources_bp = Blueprint('sources', __name__, url_prefix='/api/sources')
 app.secret_key = 'super_secret_koha_editor_key' # Replace in prod
+app.register_blueprint(sources_bp)
 
 # The queue for AI tasks
 
@@ -45,6 +49,62 @@ def init_sqlite():
     conn.close()
 
 init_sqlite()
+
+# Initialize source-related tables if not exist
+conn = sqlite3.connect(SQLITE_DB)
+cur = conn.cursor()
+cur.execute('''
+    CREATE TABLE IF NOT EXISTS source_folders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        parent_id INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(parent_id) REFERENCES source_folders(id)
+    )
+''')
+cur.execute('''
+    CREATE TABLE IF NOT EXISTS source_files (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        folder_id INTEGER,
+        filename TEXT NOT NULL,
+        filepath TEXT NOT NULL,
+        filetype TEXT,
+        uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        version TEXT,
+        ocr_text TEXT,
+        mrc_json TEXT,
+        processing_log TEXT,
+        FOREIGN KEY(folder_id) REFERENCES source_folders(id)
+    )
+''')
+cur.execute('''
+    CREATE TABLE IF NOT EXISTS source_versions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_id INTEGER,
+        version_number TEXT,
+        filepath TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(file_id) REFERENCES source_files(id)
+    )
+''')
+conn.commit()
+conn.close()
+
+# Ensure source file storage directory exists (dedicated folder under /home)
+SOURCE_ROOT = '/home/koha_sources'
+SOURCE_DIR = SOURCE_ROOT
+import os
+os.makedirs(SOURCE_ROOT, exist_ok=True)
+
+# Helper to resolve a relative path safely within SOURCE_ROOT
+def resolve_source_path(rel_path):
+    # Prevent path traversal
+    safe_path = os.path.normpath(os.path.join(SOURCE_ROOT, rel_path))
+    if not safe_path.startswith(os.path.abspath(SOURCE_ROOT)):
+        raise ValueError('Invalid path')
+    return safe_path
+
+
 
 
 # Folder where uploaded images are saved on the server
@@ -301,7 +361,8 @@ def stats():
                 if not str(year).strip(): row_issues.append("Missing_Year")
                 elif is_invalid_year(year): row_issues.append("Invalid_Year")
                 
-                if not pages.strip(): row_issues.append("Missing_Pages")
+                # Make pages optional so records can be 'clean'
+                # if not pages.strip(): row_issues.append("Missing_Pages")
                 
                 if not title.strip() or not author.strip() or not pub.strip() or not str(year).strip():
                     row_issues.append("Missing_Data")
@@ -397,11 +458,13 @@ def get_records():
                 if is_garbled(pub): reasons.append("Garbled_Publisher"); is_bad = True
                 if not str(year).strip(): reasons.append("Missing_Year")
                 if is_invalid_year(year): reasons.append("Invalid_Year"); is_bad = True
-                if not pages.strip(): reasons.append("Missing_Pages")
+                # if not pages.strip(): reasons.append("Missing_Pages")
                 
                 if filter_type == 'garbled' and not is_bad:
                     continue
                 if filter_type == 'broken' and len(reasons) == 0:
+                    continue
+                if filter_type == 'clean' and len(reasons) > 0:
                     continue
                 if filter_type == 'today':
                     import datetime
@@ -730,7 +793,65 @@ def manage_settings():
             json.dump(data, f)
         return jsonify({"success": True})
 
+# ------- LABELS ENHANCEMENT: add pagination & indexing -------
+# Ensure indexes exist for faster label queries
+conn = get_db_connection()
+try:
+    with conn.cursor() as cursor:
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_items_barcode ON koha_mfa.items (barcode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_items_callnumber ON koha_mfa.items (itemcallnumber)')
+    conn.commit()
+finally:
+    conn.close()
+
 # --- LABEL TAGGING ---
+
+@app.route('/api/labels/preview', methods=['GET'])
+@login_required
+def preview_labels():
+    start_bc = request.args.get('start', '')
+    end_bc = request.args.get('end', '')
+    if not start_bc:
+        return jsonify({"error": "Missing start barcode"}), 400
+
+    # Build barcode list
+    prefix = ""
+    for char in start_bc:
+        if not char.isdigit():
+            prefix += char
+        else:
+            break
+    try:
+        s_num = int(start_bc.replace(prefix, ''))
+        e_num = int((end_bc or start_bc).replace(prefix, ''))
+    except:
+        return jsonify({"error": "Invalid barcode format"}), 400
+
+    target_barcodes = [f"{prefix}{i}" for i in range(s_num, e_num + 1)]
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            format_strings = ','.join(['%s'] * len(target_barcodes))
+            # Apply pagination parameters if provided
+            limit = int(request.args.get('limit', 100))
+            offset = int(request.args.get('offset', 0))
+            cursor.execute(f"""
+                SELECT i.barcode, i.itemcallnumber, i.itemnumber,
+                       b.title, b.author
+                FROM koha_mfa.items i
+                JOIN koha_mfa.biblio b ON i.biblionumber = b.biblionumber
+                WHERE i.barcode IN ({format_strings})
+                ORDER BY i.barcode
+                LIMIT %s OFFSET %s
+            """, tuple(target_barcodes) + (limit, offset))
+            items = cursor.fetchall()
+        return jsonify({"success": True, "items": items, "limit": limit, "offset": offset})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
 @app.route('/api/labels/batch', methods=['POST'])
 @login_required
 def create_label_batch():
@@ -768,8 +889,15 @@ def create_label_batch():
                 return jsonify({"error": "No matching items found"}), 404
                 
             # Create a new batch in creator_batches
+            # Ensure creator_batches table exists
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS creator_batches (
+                    batch_id INTEGER PRIMARY KEY,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
             # Find next batch_id
-            cursor.execute("SELECT MAX(batch_id) as max_b FROM koha_mfa.creator_batches")
+            cursor.execute("SELECT MAX(batch_id) as max_b FROM creator_batches")
             b_row = cursor.fetchone()
             new_batch_id = (b_row['max_b'] or 0) + 1
             
@@ -788,6 +916,8 @@ def create_label_batch():
                     new_notes = (notes + " [TAGGED]").strip()
                     cursor.execute("UPDATE koha_mfa.items SET itemnotes_nonpublic = %s WHERE itemnumber = %s", (new_notes, item['itemnumber']))
             
+            # Insert new batch record
+            cursor.execute('INSERT INTO creator_batches (batch_id) VALUES (?)', (new_batch_id,))
             conn.commit()
             return jsonify({"success": True, "batch_id": new_batch_id})
     finally:
@@ -879,6 +1009,299 @@ def batch_queue():
     return jsonify({"success": True, "queued": count})
 
 # --- IMAGE UPLOADS ---
+
+# --- SOURCE EXPLORER ---
+
+SOURCE_DIR = '/var/www/koha_editor/sources'
+if not os.path.exists(SOURCE_DIR):
+    os.makedirs(SOURCE_DIR, exist_ok=True)
+
+def resolve_source_path(subpath):
+    # Prevent path traversal
+    if not subpath: return SOURCE_DIR
+    target = os.path.abspath(os.path.join(SOURCE_DIR, subpath))
+    if not target.startswith(SOURCE_DIR):
+        return SOURCE_DIR
+    return target
+
+@app.route('/api/zebra/status', methods=['GET'])
+@login_required
+def zebra_status():
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # Query the zebraqueue for un-indexed records
+            cursor.execute("SELECT count(*) as count FROM koha_mfa.zebraqueue WHERE done = 0")
+            row = cursor.fetchone()
+            count = row['count'] if row else 0
+        return jsonify({"success": True, "pending_count": count})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/zebra/reindex', methods=['POST'])
+@login_required
+def zebra_reindex():
+    import subprocess
+    try:
+        # Run Koha fast re-indexing script
+        cmd = 'koha-shell -c "rebuild_zebra.pl -b -a -z" mfa'
+        process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # We don't block fully if it takes long, but for -z it's usually fast.
+        out, err = process.communicate(timeout=60)
+        
+        if process.returncode == 0:
+            return jsonify({"success": True, "message": "Zebra re-indexed successfully."})
+        else:
+            return jsonify({"error": err.decode('utf-8')}), 500
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": True, "message": "Re-index started in background."})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/source/list', methods=['GET'])
+@login_required
+def source_list():
+    path = request.args.get('path', '')
+    target_dir = resolve_source_path(path)
+    
+    if not os.path.exists(target_dir):
+        return jsonify({"error": "Path does not exist"}), 404
+        
+    items = []
+    try:
+        for f in os.listdir(target_dir):
+            full_path = os.path.join(target_dir, f)
+            rel_path = os.path.relpath(full_path, SOURCE_DIR)
+            # Use forward slashes for relative path in UI
+            rel_path = rel_path.replace('\\', '/')
+            is_dir = os.path.isdir(full_path)
+            size = os.path.getsize(full_path) if not is_dir else 0
+            mtime = os.path.getmtime(full_path)
+            
+            items.append({
+                "name": f,
+                "path": rel_path,
+                "is_dir": is_dir,
+                "size": size,
+                "mtime": mtime
+            })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+        
+    return jsonify({"path": path.replace('\\', '/'), "items": sorted(items, key=lambda x: (not x['is_dir'], x['name']))})
+
+@app.route('/api/source/mkdir', methods=['POST'])
+@login_required
+def source_mkdir():
+    data = request.json
+    path = data.get('path', '')
+    new_dir = data.get('name', '').strip()
+    if not new_dir: return jsonify({"error": "Directory name required"}), 400
+    
+    target_dir = resolve_source_path(os.path.join(path, new_dir))
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/source/upload', methods=['POST'])
+@login_required
+def source_upload():
+    path = request.form.get('path', '')
+    target_dir = resolve_source_path(path)
+    os.makedirs(target_dir, exist_ok=True)
+    
+    # Enforce 10MB per file limit
+    max_size = 10 * 1024 * 1024
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part"}), 400
+    
+    files = request.files.getlist('file')
+    saved = []
+    try:
+        for f in files:
+            if f.filename:
+                # Check file size
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                f.seek(0)
+                if size > max_size:
+                    return jsonify({"error": f"File {f.filename} exceeds 10MB limit"}), 400
+                # Basic sanitization
+                filename = "".join(c for c in f.filename if c.isalnum() or c in " ._-")
+                save_path = os.path.join(target_dir, filename)
+                f.save(save_path)
+                saved.append(filename)
+        return jsonify({"success": True, "saved": saved})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/source/file', methods=['GET', 'POST'])
+@login_required
+def source_file_ops():
+    if request.method == 'GET':
+        path = request.args.get('path', '')
+        target_file = resolve_source_path(path)
+        
+        if not os.path.exists(target_file) or os.path.isdir(target_file):
+            return jsonify({"error": "File not found"}), 404
+            
+        ext = target_file.lower().split('.')[-1]
+        
+        # Stream image types
+        if ext in ['jpg', 'jpeg', 'png', 'gif']:
+            return send_from_directory(os.path.dirname(target_file), os.path.basename(target_file))
+        
+        # Read text types
+        if ext in ['txt', 'json', 'md', 'csv']:
+            try:
+                with open(target_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                return jsonify({"success": True, "content": content})
+            except Exception as e:
+                return jsonify({"error": "Could not read file: " + str(e)}), 500
+                
+        return jsonify({"error": "Unsupported file type for preview"}), 400
+
+    if request.method == 'POST':
+        data = request.json
+        path = data.get('path', '')
+        content = data.get('content', '')
+        target_file = resolve_source_path(path)
+        
+        if not path:
+            return jsonify({"error": "Path required"}), 400
+            
+        try:
+            # Write content to file
+            with open(target_file, 'w', encoding='utf-8') as f:
+                f.write(content)
+            # Record version timestamp in source_versions table
+            version_number = str(int(time.time()))
+            vconn = sqlite3.connect(SQLITE_DB)
+            vcur = vconn.cursor()
+            vcur.execute(
+                'INSERT OR IGNORE INTO source_versions (file_id, version_number, filepath) VALUES ((SELECT id FROM source_files WHERE filepath = ? LIMIT 1), ?, ?)',
+                (target_file, version_number, target_file)
+            )
+            vconn.commit()
+            vconn.close()
+            return jsonify({"success": True})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+
+# --- SOURCE PROCESSING API ---
+@app.route('/api/source/process_ocr', methods=['POST'])
+@login_required
+def process_ocr():
+    data = request.json
+    paths = data.get('paths', [])
+    if not paths: return jsonify({"error": "No files selected"}), 400
+    
+    import sqlite3
+    conn = sqlite3.connect(SQLITE_DB)
+    try:
+        task_ids = []
+        cursor = conn.cursor()
+        for p in paths:
+            target_file = resolve_source_path(p)
+            if not os.path.exists(target_file): continue
+            if not target_file.lower().endswith(('.jpg', '.jpeg', '.png')): continue
+            
+            task_id = f"ocr_{uuid.uuid4().hex[:12]}"
+            cursor.execute(
+                "INSERT INTO ai_task_queue (task_id, type, status, images, result_data) VALUES (?, ?, ?, ?, ?)",
+                (task_id, 'source_ocr', 'pending', target_file, '')
+            )
+            task_ids.append(task_id)
+        conn.commit()
+        return jsonify({"success": True, "task_ids": task_ids})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/source/process_ai', methods=['POST'])
+@login_required
+def process_ai_metadata():
+    data = request.json
+    paths = data.get('paths', [])
+    if not paths: return jsonify({"error": "No files selected"}), 400
+    
+    import sqlite3
+    conn = sqlite3.connect(SQLITE_DB)
+    try:
+        task_ids = []
+        cursor = conn.cursor()
+        for p in paths:
+            target_file = resolve_source_path(p)
+            if not os.path.exists(target_file): continue
+            if not target_file.lower().endswith(('.txt', '.ocr.txt')): continue
+            
+            task_id = f"meta_{uuid.uuid4().hex[:12]}"
+            cursor.execute(
+                "INSERT INTO ai_task_queue (task_id, type, status, images, result_data) VALUES (?, ?, ?, ?, ?)",
+                (task_id, 'source_meta', 'pending', target_file, '')
+            )
+            task_ids.append(task_id)
+        conn.commit()
+        return jsonify({"success": True, "task_ids": task_ids})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/source/generate_mrc', methods=['POST'])
+@login_required
+def generate_mrc():
+    data = request.json
+    paths = data.get('paths', [])
+    if not paths: return jsonify({"error": "No files selected"}), 400
+    import sqlite3
+    conn = sqlite3.connect(SQLITE_DB)
+    try:
+        task_ids = []
+        cursor = conn.cursor()
+        for p in paths:
+            target_file = resolve_source_path(p)
+            if not os.path.exists(target_file) or not target_file.lower().endswith('.json'): continue
+            task_id = f"mrc_{uuid.uuid4().hex[:12]}"
+            cursor.execute("INSERT INTO ai_task_queue (task_id, type, status, images, result_data) VALUES (?, ?, ?, ?, ?)",
+                           (task_id, 'source_mrc', 'pending', target_file, ''))
+            task_ids.append(task_id)
+        conn.commit()
+        return jsonify({"success": True, "task_ids": task_ids})
+    finally: conn.close()
+
+@app.route('/api/source/stage_koha', methods=['POST'])
+@login_required
+def stage_koha():
+    data = request.json
+    paths = data.get('paths', [])
+    if not paths: return jsonify({"error": "No files selected"}), 400
+    import sqlite3
+    conn = sqlite3.connect(SQLITE_DB)
+    try:
+        task_ids = []
+        cursor = conn.cursor()
+        for p in paths:
+            target_file = resolve_source_path(p)
+            if not os.path.exists(target_file) or not target_file.lower().endswith('.mrc'): continue
+            task_id = f"stage_{uuid.uuid4().hex[:12]}"
+            cursor.execute("INSERT INTO ai_task_queue (task_id, type, status, images, result_data) VALUES (?, ?, ?, ?, ?)",
+                           (task_id, 'source_stage', 'pending', target_file, ''))
+            task_ids.append(task_id)
+        conn.commit()
+        return jsonify({"success": True, "task_ids": task_ids})
+    finally: conn.close()
+
+# --- END SOURCE EXPLORER ---
+
+
 @app.route('/api/upload', methods=['POST'])
 @login_required
 def upload_image():
@@ -955,6 +1378,73 @@ def requeue_task(task_id):
     sq_conn.close()
     return jsonify({"success": True})
 
+
+@app.route('/api/queue/list', methods=['GET'])
+@login_required
+def get_queue_list():
+    page = int(request.args.get('page', 1))
+    limit = 50
+    offset = (page - 1) * limit
+    status = request.args.get('status', 'all')
+    q_bib = request.args.get('q_bib', '').strip()
+    
+    import sqlite3, datetime
+    sq_conn = sqlite3.connect(SQLITE_DB)
+    sq_conn.row_factory = sqlite3.Row
+    sq_c = sq_conn.cursor()
+    
+    query = "SELECT * FROM ai_task_queue WHERE 1=1"
+    params = []
+    
+    if status != 'all':
+        query += " AND status = ?"
+        params.append(status)
+        
+    if q_bib:
+        query += " AND biblionumber LIKE ?"
+        params.append(f"%{q_bib}%")
+        
+    # Count total
+    sq_c.execute(f"SELECT COUNT(*) as c FROM ({query})", params)
+    total = sq_c.fetchone()['c']
+    
+    # Get paginated
+    query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+    
+    sq_c.execute(query, params)
+    rows = sq_c.fetchall()
+    sq_conn.close()
+    
+    data = []
+    for r in rows:
+        try:
+            config = r['task_config']
+        except:
+            config = '{}'
+        try:
+            result = r['result_data']
+        except:
+            result = '{}'
+            
+        data.append({
+            "task_id": r['task_id'],
+            "type": r['type'],
+            "status": r['status'],
+            "biblionumber": r['biblionumber'],
+            "created_at": r['created_at'],
+            "task_config": config,
+            "result_data": result
+        })
+        
+    return jsonify({
+        "success": True,
+        "data": data,
+        "total": total,
+        "page": page,
+        "limit": limit
+    })
+
 # --- BACKGROUND AI WORKER ---
 
 def ai_worker_loop():
@@ -1016,6 +1506,7 @@ def ai_worker_loop():
                             raw_text = "UNKNOWN TEXT"
                             
                     import json
+                    from google import genai
                     try:
                         task_config_str = task['task_config']
                     except:
@@ -1039,22 +1530,40 @@ def ai_worker_loop():
                         prompt = f"Extract metadata from OCR text. Output JSON with keys: title, author, publishercode, publicationyear, isbn, ddc, subjects.\nDo not output anything else.\n\nText:\n{raw_text}"
                         
                     ai_text = ""
-                    if ai_model == 'gemini' or ai_model == 'openai':
-                        ai_text = '{"title": "Cloud APIs Not Configured", "author": "Please configure API Keys"}'
-                    elif ai_model == 'qwen':
+                    # 1. Try Gemini if specified OR fallback to it
+                    if ai_model == 'gemini' or ai_model == 'fallback':
                         try:
-                            payload = {"model": "qwen2.5", "prompt": prompt, "stream": False}
-                            res = requests.post('http://localhost:11434/api/generate', json=payload, timeout=30)
-                            ai_text = res.json().get('response', '')
-                        except:
-                            ai_text = '{"title": "Qwen Offline", "author": "Check Server"}'
+                            api_key = config.GEMINI_API_KEY if config else os.environ.get("GEMINI_API_KEY")
+                            client = genai.Client(api_key=api_key)
+                            response = client.models.generate_content(
+                                model='gemini-2.5-flash',
+                                contents=prompt
+                            )
+                            ai_text = response.text
+                        except Exception as e:
+                            print(f"Gemini API Error: {e}")
+                            ai_text = '{"title": "Gemini API Error", "author": "Check logs"}'
+                            
+                    # 2. Local DeepSeek via Tunnel
                     else:
                         try:
                             payload = {"model": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B", "messages": [{"role": "user", "content": prompt}], "temperature": 0.0}
                             res = requests.post('http://localhost:8000/v1/chat/completions', json=payload, timeout=30)
                             ai_text = res.json()['choices'][0]['message']['content']
-                        except:
-                            ai_text = '{"title": "DeepSeek Offline", "author": "Check Server"}'
+                        except Exception as e:
+                            print(f"DeepSeek Tunnel Error: {e}")
+                            # Auto Fallback to Gemini if vLLM tunnel is frozen
+                            print("Falling back to Gemini...")
+                            try:
+                                api_key = config.GEMINI_API_KEY if config else os.environ.get("GEMINI_API_KEY")
+                                client = genai.Client(api_key=api_key)
+                                response = client.models.generate_content(
+                                    model='gemini-2.5-flash',
+                                    contents=prompt
+                                )
+                                ai_text = response.text
+                            except:
+                                ai_text = '{"title": "DeepSeek & Gemini Offline", "author": "Check Server"}'
                     
                     ai_text = re.sub(r'<think>.*?</think>', '', ai_text, flags=re.DOTALL).strip()
                     json_match = re.search(r'\{.*?\}', ai_text, flags=re.DOTALL)
@@ -1142,6 +1651,143 @@ def ai_worker_loop():
 
 # Start the worker daemon
 import threading
+
+def source_worker_loop():
+    import json, base64, requests, os, uuid, time
+    from google import genai
+    
+    while True:
+        try:
+            sq_conn = sqlite3.connect(SQLITE_DB)
+            sq_conn.row_factory = sqlite3.Row
+            sq_c = sq_conn.cursor()
+            sq_c.execute("SELECT * FROM ai_task_queue WHERE type IN ('source_ocr', 'source_meta', 'source_mrc', 'source_stage') AND status = 'pending' LIMIT 1")
+            task = sq_c.fetchone()
+            
+            if task:
+                task_id = task['task_id']
+                t_type = task['type']
+                target_file = task['images']
+                
+                sq_c.execute("UPDATE ai_task_queue SET status = 'processing' WHERE task_id = ?", (task_id,))
+                sq_conn.commit()
+                sq_conn.close()
+                
+                try:
+                    result_data = {"status": "success", "file": target_file}
+                    
+                    if t_type == 'source_ocr':
+                        with open(target_file, 'rb') as f:
+                            encoded_string = base64.b64encode(f.read()).decode('utf-8')
+                        ocr_payload = {'apikey': 'helloworld', 'base64Image': 'data:image/jpeg;base64,' + encoded_string, 'language': 'eng'}
+                        ocr_res = requests.post('https://api.ocr.space/parse/image', data=ocr_payload, timeout=20)
+                        ocr_data = ocr_res.json()
+                        raw_text = ""
+                        if not ocr_data.get('IsErroredOnProcessing'):
+                            for parsed in ocr_data.get('ParsedResults', []):
+                                raw_text += parsed.get('ParsedText', '') + "\n"
+                        else:
+                            raise Exception("OCR Space Error")
+                            
+                        ocr_file = target_file + ".ocr.txt"
+                        with open(ocr_file, 'w', encoding='utf-8') as f:
+                            f.write(raw_text)
+                        result_data['ocr_file'] = ocr_file
+                        result_data['text_preview'] = raw_text[:200]
+                        
+                    elif t_type == 'source_meta':
+                        with open(target_file, 'r', encoding='utf-8') as f:
+                            text_content = f.read()
+                            
+                        prompt = f"Extract metadata from OCR text. Output JSON with keys: title, author, publishercode, publicationyear, isbn, ddc, subjects, pages.\nDo not output anything else.\n\nText:\n{text_content}"
+                        
+                        try:
+                            api_key = config.GEMINI_API_KEY if 'config' in globals() else os.environ.get("GEMINI_API_KEY")
+                            client = genai.Client(api_key=api_key)
+                            response = client.models.generate_content(
+                                model='gemini-2.5-flash',
+                                contents=prompt
+                            )
+                            ai_text = response.text
+                            # clean markdown
+                            ai_text = ai_text.replace("```json", "").replace("```", "").strip()
+                            json.loads(ai_text) # validate
+                        except Exception as e:
+                            ai_text = json.dumps({"title": "AI Error", "error": str(e)})
+                            
+                        meta_file = target_file.replace('.ocr.txt', '') + ".meta.json"
+                        with open(meta_file, 'w', encoding='utf-8') as f:
+                            f.write(ai_text)
+                        result_data['meta_file'] = meta_file
+                        
+                    elif t_type == 'source_mrc':
+                        import pymarc
+                        with open(target_file, 'r', encoding='utf-8') as f:
+                            meta = json.load(f)
+                        
+                        record = pymarc.Record()
+                        record.add_field(pymarc.Field(tag='245', indicators=['0','0'], subfields=[pymarc.Subfield('a', meta.get('title', 'Unknown Title'))]))
+                        if meta.get('author'):
+                            record.add_field(pymarc.Field(tag='100', indicators=['1',' '], subfields=[pymarc.Subfield('a', meta.get('author'))]))
+                        if meta.get('publishercode'):
+                            record.add_field(pymarc.Field(tag='260', indicators=[' ',' '], subfields=[pymarc.Subfield('b', meta.get('publishercode'))]))
+                        if meta.get('publicationyear'):
+                            record.add_field(pymarc.Field(tag='260', indicators=[' ',' '], subfields=[pymarc.Subfield('c', str(meta.get('publicationyear')))]))
+                        if meta.get('isbn'):
+                            record.add_field(pymarc.Field(tag='020', indicators=[' ',' '], subfields=[pymarc.Subfield('a', meta.get('isbn'))]))
+                            
+                        mrc_file = target_file.replace('.meta.json', '').replace('.json', '') + ".mrc"
+                        with open(mrc_file, 'wb') as f2:
+                            f2.write(record.as_marc())
+                        
+                        result_data['mrc_file'] = mrc_file
+                        
+                    elif t_type == 'source_stage':
+                        import subprocess
+                        # Run Koha stage MARC command
+                        cmd = f'koha-shell -c "perl /usr/share/koha/bin/stage_file.pl --file {target_file} --comment \'AI Workstation Import\'" mfa'
+                        process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        out, err = process.communicate()
+                        
+                        log_file = target_file + ".log.json"
+                        with open(log_file, 'w', encoding='utf-8') as f2:
+                            json.dump({
+                                "command": cmd,
+                                "stdout": out.decode('utf-8', errors='ignore'),
+                                "stderr": err.decode('utf-8', errors='ignore'),
+                                "returncode": process.returncode,
+                                "timestamp": time.time()
+                            }, f2)
+                        
+                        result_data['stage_log'] = log_file
+                        result_data['returncode'] = process.returncode
+                        if process.returncode != 0:
+                            raise Exception(f"Stage failed. Check log: {log_file}")
+                    
+                    sq_conn2 = sqlite3.connect(SQLITE_DB)
+                    sq_c2 = sq_conn2.cursor()
+                    sq_c2.execute("UPDATE ai_task_queue SET status = 'completed', result_data = ? WHERE task_id = ?", (json.dumps(result_data), task_id))
+                    sq_conn2.commit()
+                    sq_conn2.close()
+                    
+                except Exception as e:
+                    sq_conn3 = sqlite3.connect(SQLITE_DB)
+                    sq_c3 = sq_conn3.cursor()
+                    sq_c3.execute("UPDATE ai_task_queue SET status = 'error', result_data = ? WHERE task_id = ?", (json.dumps({"error": str(e)}), task_id))
+                    sq_conn3.commit()
+                    sq_conn3.close()
+            else:
+                sq_conn.close()
+        except Exception as ex:
+            logging.error(f"Source Worker Loop Error: {ex}")
+            
+        time.sleep(3)
+
+source_thread = threading.Thread(target=source_worker_loop, daemon=True)
+source_thread.start()
+logging.info("Source Explorer Worker Thread started.")
+
+
 worker_thread = threading.Thread(target=ai_worker_loop, daemon=True)
 worker_thread.start()
 logging.info("Background AI Worker Thread started.")
