@@ -794,16 +794,25 @@ def get_dashboard_stats():
     sq_conn = sqlite3.connect(SQLITE_DB)
     sq_conn.row_factory = sqlite3.Row
     sq_c = sq_conn.cursor()
-    sq_c.execute("SELECT COUNT(*) as c FROM ai_task_queue WHERE status IN ('pending', 'processing')")
-    queue_count = sq_c.fetchone()['c']
+    
+    sq_c.execute("SELECT status, COUNT(*) as c FROM ai_task_queue WHERE created_at >= datetime('now', '-1 day') GROUP BY status")
+    rows = sq_c.fetchall()
+    q_stats = {'pending': 0, 'processing': 0, 'completed': 0, 'error': 0}
+    for r in rows:
+        if r['status'] in q_stats:
+            q_stats[r['status']] = r['c']
+            
     sq_conn.close()
+    
+    queue_count = q_stats['pending'] + q_stats['processing']
     
     return jsonify({
         "total_biblios": total_biblios,
         "broken_biblios": broken_biblios,
         "total_items": total_items,
         "queue_count": queue_count,
-        "catalogued_today": catalogued_today
+        "catalogued_today": catalogued_today,
+        "q_stats": q_stats
     })
 
 # --- IMAGE UPLOADS ---
