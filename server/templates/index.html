@@ -393,7 +393,11 @@
                     <label style="margin-right: 10px;">Issue Filter:</label>
                     <select id="filter-select" onchange="currentPage=1; loadRecords()" style="padding: 8px;">
                         <option value="all">All Records</option>
+                        <option value="today">Catalogued Today</option>
+                        <option value="gaps">Barcode Gaps</option>
                         <option value="garbled">Any Issue / Garbled</option>
+                        <option value="broken">Needs Attention</option>
+                        <option value="clean">Clean Records</option>
                         <option value="Missing_Title">Missing Title</option>
                         <option value="Missing_Author">Missing Author</option>
                         <option value="Missing_Year">Missing Year</option>
@@ -1477,17 +1481,21 @@
         async function fetchQueueStatus() {
             const filter = document.getElementById('q-filter').value;
             const q = document.getElementById('q-search').value;
-            const res = await fetch(`/koha_editor/api/queue/list?page=${qCurrentPage}&status=${filter}&q_bib=${encodeURIComponent(q)}`);
+
+            // Fetch queue list and stats in parallel
+            const [res, statsRes] = await Promise.all([
+                fetch(`/koha_editor/api/queue/list?page=${qCurrentPage}&status=${filter}&q_bib=${encodeURIComponent(q)}`),
+                fetch('/koha_editor/api/stats')
+            ]);
             const data = await res.json();
-            
-            // Update stats cards directly
-            fetch('/koha_editor/api/stats').then(r => r.json()).then(s => {
-                const qs = s.q_stats || {};
-                document.getElementById('q-stat-pending').textContent = qs.pending || 0;
-                document.getElementById('q-stat-processing').textContent = qs.processing || 0;
-                document.getElementById('q-stat-completed').textContent = qs.completed || 0;
-                document.getElementById('q-stat-error').textContent = qs.error || 0;
-            });
+            const s = await statsRes.json();
+
+            // Update stats cards
+            const qs = s.q_stats || {};
+            document.getElementById('q-stat-pending').textContent = qs.pending || 0;
+            document.getElementById('q-stat-processing').textContent = qs.processing || 0;
+            document.getElementById('q-stat-completed').textContent = qs.completed || 0;
+            document.getElementById('q-stat-error').textContent = qs.error || 0;
             
             document.getElementById('q-page-info').textContent = `Page ${data.page} / Total: ${data.total}`;
             const tbody = document.getElementById('queue-body');
@@ -1644,9 +1652,9 @@ async function submitBatchFix() {
             const qk = document.getElementById('search-keyword').value;
             const qb = document.getElementById('search-barcode').value;
             const qc = document.getElementById('search-callnumber').value;
-            
-            let query = `filter=${filter}&q_keyword=${encodeURIComponent(qk)}&q_barcode=${encodeURIComponent(qb)}&q_callnumber=${encodeURIComponent(qc)}&sort=${currentSort}&desc=${sortDesc}`;  
-            if(filter !== 'all' && filter !== 'garbled' && filter !== 'broken' && filter !== 'today' && filter !== 'clean') query += `&issue=${filter}`;
+
+            let query = `filter=${filter}&q_keyword=${encodeURIComponent(qk)}&q_barcode=${encodeURIComponent(qb)}&q_callnumber=${encodeURIComponent(qc)}&sort=${currentSort}&desc=${sortDesc}`;
+            if(filter !== 'all' && filter !== 'garbled' && filter !== 'broken' && filter !== 'today' && filter !== 'clean' && filter !== 'gaps') query += `&issue=${filter}`;
             
             const limit = document.getElementById('limit-select') ? document.getElementById('limit-select').value : 50;
             const res = await fetch(`/koha_editor/api/records?page=${currentPage}&limit=${limit}&${query}`);

@@ -510,11 +510,23 @@ def stats():
                 else:
                     complete += 1
 
+            # Queue stats
+            sq_conn = sqlite3.connect(SQLITE_DB)
+            sq_conn.row_factory = sqlite3.Row
+            sq_c = sq_conn.cursor()
+            sq_c.execute("SELECT status, COUNT(*) as c FROM ai_task_queue GROUP BY status")
+            q_stats = {'pending': 0, 'processing': 0, 'completed': 0, 'error': 0}
+            for r in sq_c.fetchall():
+                if r['status'] in q_stats:
+                    q_stats[r['status']] = r['c']
+            sq_conn.close()
+
             return jsonify({
                 "total": total,
                 "complete": complete,
                 "incomplete": incomplete,
-                "issues": issues
+                "issues": issues,
+                "q_stats": q_stats
             })
     finally:
         conn.close()
@@ -606,7 +618,11 @@ def get_records():
                     import datetime
                     if not row['datecreated'] or row['datecreated'].date() != datetime.date.today():
                         continue
-                
+                if filter_type == 'gaps':
+                    # Skip non-numeric barcodes; shown only for gap visualization
+                    if not str(barcode).isdigit():
+                        continue
+
                 if issue_type and issue_type != 'all' and issue_type not in reasons:
                     continue
                     
@@ -1156,12 +1172,31 @@ def get_dashboard_stats():
     
     queue_count = q_stats['pending'] + q_stats['processing']
     
+    # Barcode gap count (numeric barcodes only)
+    gap_count = 0
+    try:
+        conn2 = get_db_connection()
+        try:
+            with conn2.cursor() as cursor:
+                cursor.execute("SELECT barcode FROM koha_mfa.items WHERE barcode REGEXP '^[0-9]+$'")
+                rows = cursor.fetchall()
+                if rows:
+                    barcodes = sorted([int(r['barcode']) for r in rows])
+                    for i in range(len(barcodes) - 1):
+                        if barcodes[i+1] - barcodes[i] > 1:
+                            gap_count += 1
+        finally:
+            conn2.close()
+    except Exception as e:
+        logging.error(f"Barcode gap count failed: {e}")
+
     return jsonify({
         "total_biblios": total_biblios,
         "broken_biblios": broken_biblios,
         "total_items": total_items,
         "queue_count": queue_count,
         "catalogued_today": catalogued_today,
+        "gap_count": gap_count,
         "q_stats": q_stats
     })
 
