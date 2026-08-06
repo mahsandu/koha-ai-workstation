@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sothik IT | Koha AI Workstation</title>
+    <link href="https://fonts.googleapis.com/css2?family=Dosis:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #F7F6F2;
+            --primary: #C026D3;
+            --primary-hover: #a21db3;
+            --card-bg: #FFFFFF;
+            --text-main: #333333;
+            --text-light: #666666;
+            --border-color: #E5E7EB;
+        }
+        
+        body { font-family: 'Dosis', sans-serif; background-color: var(--bg-color); color: var(--text-main); margin: 0; padding: 0; }
+        .navbar { background: var(--card-bg); padding: 15px 30px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border-bottom: 3px solid var(--primary); }
+        .navbar h1 { margin: 0; color: var(--primary); font-size: 2rem; font-weight: 700; display: flex; gap: 20px; align-items: center;}
+        
+        .nav-tabs { display: flex; gap: 10px; }
+        .nav-tab { padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; color: var(--text-light); transition: 0.2s; }
+        .nav-tab.active { background: #fdf4ff; color: var(--primary); }
+        .nav-tab:hover:not(.active) { background: #f3f4f6; }
+        
+        .user-info { font-weight: 600; color: var(--text-light); }
+
+        .container { max-width: 1600px; margin: 30px auto; padding: 0 20px; }
+        
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        /* AI Processor Styles */
+        .ai-grid { display: grid; grid-template-columns: 400px 1fr; gap: 30px; }
+        .panel { background: var(--card-bg); border-radius: 12px; padding: 25px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        .panel h2 { margin-top: 0; color: var(--text-main); border-bottom: 2px solid var(--border-color); padding-bottom: 10px; }
+        
+        .upload-area { border: 2px dashed var(--primary); border-radius: 8px; padding: 30px; text-align: center; cursor: pointer; transition: background 0.2s; margin-bottom: 20px; }
+        .upload-area:hover { background: #fdf4ff; }
+        .upload-area p { margin: 0; color: var(--text-light); font-weight: 600; }
+
+        .folder-list { max-height: 600px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; }
+        .folder-card { border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; cursor: pointer; transition: border-color 0.2s; }
+        .folder-card:hover, .folder-card.active { border-color: var(--primary); background: #fdf4ff; }
+        
+        .folder-header { font-weight: 700; font-size: 1.1rem; margin-bottom: 10px; color: var(--primary); }
+        .folder-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+        .folder-inputs input { width: 100%; padding: 8px; border: 1px solid var(--border-color); border-radius: 4px; box-sizing: border-box; }
+        
+        .image-gallery { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 5px; }
+        .image-gallery img { height: 60px; width: 45px; object-fit: cover; border-radius: 4px; border: 1px solid #ddd; }
+        
+        .status-badge { display: inline-block; padding: 3px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; margin-top: 5px; }
+        .status-pending { background: #f3f4f6; color: #4b5563; }
+        .status-processing { background: #fef3c7; color: #d97706; animation: pulse 1.5s infinite; }
+        .status-ready { background: #d1fae5; color: #059669; }
+
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
+
+        /* Form / Button Styles */
+        .editor-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .btn { padding: 10px 20px; font-family: 'Dosis', sans-serif; font-size: 1rem; font-weight: 600; color: white; background: var(--primary); border: none; border-radius: 6px; cursor: pointer; transition: background 0.2s; }
+        .btn:hover { background: var(--primary-hover); }
+        .btn-outline { background: transparent; color: var(--primary); border: 2px solid var(--primary); }
+        .btn-outline:hover { background: var(--primary); color: white; }
+        .btn-small { padding: 6px 12px; font-size: 0.9rem; }
+
+        .editor-layout { display: grid; grid-template-columns: 1fr 1.5fr; gap: 30px; }
+        .preview-image img { width: 100%; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 10px;}
+        .image-nav { display: flex; gap: 10px; overflow-x: auto; }
+        .image-nav img { height: 80px; width: 60px; object-fit: cover; cursor: pointer; border: 2px solid transparent; border-radius: 4px; }
+        .image-nav img.selected { border-color: var(--primary); }
+        
+        .marc-form { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        .form-group { display: flex; flex-direction: column; gap: 5px; }
+        .form-group.full-width { grid-column: span 2; }
+        label { font-weight: 600; color: var(--text-light); font-size: 0.9rem; }
+        input, select, textarea { padding: 10px; font-family: inherit; font-size: 1rem; border: 1px solid var(--border-color); border-radius: 6px; outline: none; transition: border-color 0.2s; }
+        input:focus, textarea:focus { border-color: var(--primary); }
+        
+        /* Dashboard Stats */
+        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 25px; }
+        .stat-card { background: white; padding: 20px; border-radius: 8px; border: 1px solid var(--border-color); box-shadow: 0 2px 4px rgba(0,0,0,0.02); text-align: center; }
+        .stat-card h3 { margin: 0; color: var(--text-light); font-size: 1rem; }
+        .stat-card .val { font-size: 2rem; font-weight: 700; color: var(--primary); margin-top: 5px; }
+
+        /* Data Table */
+        .table-container { background: white; border-radius: 8px; border: 1px solid var(--border-color); overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; }
+        th { background: #f9fafb; padding: 12px 15px; text-align: left; font-size: 0.9rem; color: var(--text-light); border-bottom: 2px solid var(--border-color); }
+        td { padding: 12px 15px; border-bottom: 1px solid var(--border-color); font-size: 0.95rem; }
+        tr:last-child td { border-bottom: none; }
+        .edit-input { width: 90%; padding: 6px; font-size: 0.9rem; }
+        
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <h1>
+            Sothik IT Portal
+            <div class="nav-tabs">
+                <div class="nav-tab active" onclick="switchTab('ai')">AI Batch Upload</div>
+                <div class="nav-tab" onclick="switchTab('browser')">Live Catalog Browser</div>
+            </div>
+        </h1>
+        <div class="user-info">
+            Logged in as: {{ user }} | <a href="/koha_editor/logout" style="color:var(--primary); text-decoration:none;">Logout</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        
+        <!-- AI PROCESSOR TAB -->
+        <div id="tab-ai" class="tab-content active">
+            <div class="ai-grid">
+                <!-- Left Panel -->
+                <div class="panel">
+                    <h2>Batch Folders</h2>
+                    <div class="upload-area" onclick="document.getElementById('folder-upload').click()">
+                        <p>Click to Upload Folders</p>
+                        <input type="file" id="folder-upload" webkitdirectory directory multiple style="display: none;" onchange="handleUpload(event)">
+                    </div>
+                    
+                    <button class="btn btn-outline" style="width: 100%; margin-bottom: 15px;" onclick="processAllPending()">Process All Missing AI</button>
+
+                    <div class="folder-list" id="folder-list"></div>
+                </div>
+
+                <!-- Right Panel -->
+                <div class="panel" id="editor-panel" style="opacity: 0.5; pointer-events: none;">
+                    <div class="editor-header">
+                        <h2>MARC Catalog Editor</h2>
+                        <div>
+                            <button class="btn" id="btn-save-koha" onclick="saveToKoha()">Inject to Live Koha</button>
+                        </div>
+                    </div>
+
+                    <div class="editor-layout">
+                        <div class="preview-area">
+                            <div class="preview-image">
+                                <img id="preview-img" src="" alt="Select a folder">
+                            </div>
+                            <div class="image-nav" id="image-nav"></div>
+                        </div>
+                        
+                        <div class="marc-form">
+                            <div class="form-group full-width">
+                                <label>245$a - Title</label>
+                                <input type="text" id="marc-title">
+                            </div>
+                            <div class="form-group">
+                                <label>100$a - Author</label>
+                                <input type="text" id="marc-author">
+                            </div>
+                            <div class="form-group">
+                                <label>020$a - ISBN</label>
+                                <input type="text" id="marc-isbn">
+                            </div>
+                            <div class="form-group">
+                                <label>260$b - Publisher</label>
+                                <input type="text" id="marc-publisher">
+                            </div>
+                            <div class="form-group">
+                                <label>260$c - Year</label>
+                                <input type="text" id="marc-year">
+                            </div>
+                            <div class="form-group">
+                                <label>300$a - Pages</label>
+                                <input type="text" id="marc-pages">
+                            </div>
+                            <div class="form-group">
+                                <label>250$a - Edition</label>
+                                <input type="text" id="marc-edition">
+                            </div>
+                            <div class="form-group">
+                                <label>082$a - DDC Call Number</label>
+                                <input type="text" id="marc-ddc">
+                            </div>
+                            <div class="form-group full-width">
+                                <label>650$a - Subject Headings (Comma separated)</label>
+                                <input type="text" id="marc-subjects">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- LIVE CATALOG BROWSER TAB -->
+        <div id="tab-browser" class="tab-content">
+            <div class="stats-grid" id="stats-container">
+                <div class="stat-card"><h3>Loading...</h3></div>
+            </div>
+            
+            <div style="margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <label style="margin-right: 10px;">Filter View:</label>
+                    <select id="filter-select" onchange="loadRecords()" style="padding: 8px;">
+                        <option value="all">All Records</option>
+                        <option value="garbled">Incomplete / Garbled Only</option>
+                    </select>
+                </div>
+                <div>
+                    <button class="btn btn-outline btn-small" onclick="prevPage()">← Prev</button>
+                    <span id="page-info" style="margin: 0 10px; font-weight: 600;">Page 1</span>
+                    <button class="btn btn-outline btn-small" onclick="nextPage()">Next →</button>
+                </div>
+            </div>
+
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Biblio #</th>
+                            <th>Barcode</th>
+                            <th>Title</th>
+                            <th>Author</th>
+                            <th>Publisher</th>
+                            <th>Year</th>
+                            <th>Pages</th>
+                            <th>Issues Detected</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="records-body">
+                        <tr><td colspan="9" style="text-align:center;">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+    </div>
+
+    <script>
+        // --- TAB SWITCHING ---
+        function switchTab(tab) {
+            document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            
+            document.querySelector(`.nav-tab[onclick="switchTab('${tab}')"]`).classList.add('active');
+            document.getElementById(`tab-${tab}`).classList.add('active');
+            
+            if(tab === 'browser' && document.getElementById('records-body').innerHTML.includes('Loading')) {
+                loadStats();
+                loadRecords();
+            }
+        }
+
+        // --- AI BATCH LOGIC ---
+        let folders = {};
+        let folderKeys = [];
+        let currentIndex = -1;
+
+        async function handleUpload(event) {
+            const files = event.target.files;
+            for(let i=0; i<files.length; i++) {
+                const file = files[i];
+                if(file.type.startsWith('image/')) {
+                    const pathParts = file.webkitRelativePath.split('/');
+                    const folderName = pathParts.length > 1 ? pathParts[pathParts.length - 2] : "Unknown";
+                    
+                    if(!folders[folderName]) {
+                        folders[folderName] = {
+                            folderName: folderName,
+                            barcode: folderName.split(/[ -]/)[0] || '',
+                            itemCount: folderName.split(/[ -]/)[1] || '',
+                            images: [], status: 'pending', extractedData: null, taskId: null
+                        };
+                        folderKeys.push(folderName);
+                    }
+                    
+                    const formData = new FormData();
+                    formData.append('image', file);
+                    const res = await fetch('/koha_editor/api/upload', { method: 'POST', body: formData });
+                    const data = await res.json();
+                    if(data.success) { folders[folderName].images.push(data.filename); }
+                }
+            }
+            renderFolderList();
+        }
+
+        function renderFolderList() {
+            const list = document.getElementById('folder-list');
+            list.innerHTML = '';
+            folderKeys.forEach((key, index) => {
+                const folder = folders[key];
+                const div = document.createElement('div');
+                div.className = `folder-card ${index === currentIndex ? 'active' : ''}`;
+                
+                let badgeClass = 'status-pending'; let badgeText = 'Pending AI';
+                if(folder.status === 'processing') { badgeClass = 'status-processing'; badgeText = 'AI Thinking...'; }
+                if(folder.status === 'ready') { badgeClass = 'status-ready'; badgeText = 'Review Ready'; }
+                if(folder.status === 'saved') { badgeClass = 'status-ready'; badgeText = 'Saved to Koha ✓'; }
+                
+                div.innerHTML = `
+                    <div class="folder-header" onclick="selectFolder(${index})">${folder.folderName}</div>
+                    <div class="folder-inputs">
+                        <div><label>Barcode</label><input type="text" value="${folder.barcode}" onchange="folders['${key}'].barcode = this.value"></div>
+                        <div><label>Items</label><input type="text" value="${folder.itemCount}" onchange="folders['${key}'].itemCount = this.value"></div>
+                    </div>
+                    <div class="image-gallery" onclick="selectFolder(${index})">
+                        ${folder.images.map(img => `<img src="/koha_editor/images/${img}">`).join('')}
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
+                        <span class="status-badge ${badgeClass}">${badgeText}</span>
+                        ${folder.status === 'pending' ? `<button class="btn btn-outline btn-small" onclick="processFolderAI(${index})">Process AI</button>` : ''}
+                    </div>
+                `;
+                list.appendChild(div);
+            });
+        }
+
+        function selectFolder(index) {
+            currentIndex = index; renderFolderList();
+            const folder = folders[folderKeys[index]];
+            
+            document.getElementById('image-nav').innerHTML = folder.images.map((img, i) => `
+                <img src="/koha_editor/images/${img}" class="${i===0 ? 'selected':''}" onclick="setMainImage(this, '${img}')">
+            `).join('');
+            
+            if(folder.images.length > 0) document.getElementById('preview-img').src = `/koha_editor/images/${folder.images[0]}`;
+            
+            document.getElementById('editor-panel').style.opacity = '1';
+            document.getElementById('editor-panel').style.pointerEvents = 'all';
+            
+            if(folder.extractedData) {
+                document.getElementById('marc-title').value = folder.extractedData.title || '';
+                document.getElementById('marc-author').value = folder.extractedData.author || '';
+            } else {
+                document.querySelectorAll('.marc-form input').forEach(i => i.value = '');
+            }
+        }
+
+        function setMainImage(el, imgName) {
+            document.querySelectorAll('#image-nav img').forEach(i => i.classList.remove('selected'));
+            el.classList.add('selected');
+            document.getElementById('preview-img').src = `/koha_editor/images/${imgName}`;
+        }
+
+        async function processFolderAI(index) {
+            const folder = folders[folderKeys[index]];
+            folder.status = 'processing'; renderFolderList();
+            
+            const res = await fetch('/koha_editor/api/process_ai', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ images: folder.images, barcode: folder.barcode, item_count: folder.itemCount })
+            });
+            const data = await res.json();
+            folder.taskId = data.task_id;
+            pollTask(index);
+        }
+
+        async function processAllPending() {
+            for(let i=0; i<folderKeys.length; i++) if(folders[folderKeys[i]].status === 'pending') await processFolderAI(i);
+        }
+
+        async function pollTask(index) {
+            const folder = folders[folderKeys[index]];
+            if(!folder.taskId) return;
+            const res = await fetch(`/koha_editor/api/process_ai/${folder.taskId}`);
+            const data = await res.json();
+            if(data.status === 'completed') {
+                folder.status = 'ready'; folder.extractedData = data.result;
+                if(currentIndex === index) selectFolder(index);
+                renderFolderList();
+            } else if (data.status === 'error') {
+                folder.status = 'pending'; alert('AI Processing failed.'); renderFolderList();
+            } else {
+                setTimeout(() => pollTask(index), 2000);
+            }
+        }
+
+        async function saveToKoha() {
+            if(currentIndex === -1) return;
+            const btn = document.getElementById('btn-save-koha'); btn.textContent = 'Saving...';
+            setTimeout(() => {
+                btn.textContent = 'Inject to Live Koha';
+                folders[folderKeys[currentIndex]].status = 'saved'; renderFolderList();
+                alert("Saved to Koha Successfully!");
+            }, 1000);
+        }
+
+        // --- LIVE BROWSER LOGIC ---
+        let currentPage = 1;
+        
+        async function loadStats() {
+            const res = await fetch('/koha_editor/api/stats');
+            const data = await res.json();
+            document.getElementById('stats-container').innerHTML = `
+                <div class="stat-card"><h3>Total Records</h3><div class="val">${data.total}</div></div>
+                <div class="stat-card"><h3>Clean Records</h3><div class="val" style="color:#059669">${data.complete}</div></div>
+                <div class="stat-card"><h3>Needs Attention</h3><div class="val" style="color:#d97706">${data.incomplete}</div></div>
+                <div class="stat-card" style="text-align:left; font-size: 0.85rem;">
+                    <h3 style="margin-bottom:5px;">Top Issues</h3>
+                    ${Object.entries(data.issues).filter(x => x[1] > 0).sort((a,b) => b[1]-a[1]).slice(0,3).map(x => `<div>${x[0]}: <b>${x[1]}</b></div>`).join('')}
+                </div>
+            `;
+        }
+
+        async function loadRecords() {
+            const filter = document.getElementById('filter-select').value;
+            const res = await fetch(`/koha_editor/api/records?page=${currentPage}&limit=50&filter=${filter}`);
+            const data = await res.json();
+            
+            document.getElementById('page-info').textContent = `Page ${data.page}`;
+            const tbody = document.getElementById('records-body');
+            
+            if(data.data.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;">No records found.</td></tr>`;
+                return;
+            }
+            
+            tbody.innerHTML = data.data.map(r => `
+                <tr id="row-${r.biblionumber}">
+                    <td>${r.biblionumber}</td>
+                    <td>${r.barcode}</td>
+                    <td><input type="text" class="edit-input" id="title-${r.biblionumber}" value="${r.title.replace(/"/g, '&quot;')}"></td>
+                    <td><input type="text" class="edit-input" id="author-${r.biblionumber}" value="${r.author.replace(/"/g, '&quot;')}"></td>
+                    <td><input type="text" class="edit-input" id="pub-${r.biblionumber}" value="${r.publishercode.replace(/"/g, '&quot;')}"></td>
+                    <td><input type="text" class="edit-input" id="year-${r.biblionumber}" value="${r.publicationyear.replace(/"/g, '&quot;')}"></td>
+                    <td><input type="text" class="edit-input" id="pages-${r.biblionumber}" value="${r.pages.replace(/"/g, '&quot;')}"></td>
+                    <td style="color:#dc2626; font-size:0.8rem; font-weight:600;">${r.issues}</td>
+                    <td><button class="btn btn-small" onclick="saveRecord(${r.biblionumber})">Save</button></td>
+                </tr>
+            `).join('');
+        }
+
+        function prevPage() { if(currentPage > 1) { currentPage--; loadRecords(); } }
+        function nextPage() { currentPage++; loadRecords(); }
+
+        async function saveRecord(biblionumber) {
+            const btn = document.querySelector(`#row-${biblionumber} button`);
+            btn.textContent = "...";
+            
+            const payload = {
+                title: document.getElementById(`title-${biblionumber}`).value,
+                author: document.getElementById(`author-${biblionumber}`).value,
+                publishercode: document.getElementById(`pub-${biblionumber}`).value,
+                publicationyear: document.getElementById(`year-${biblionumber}`).value,
+                pages: document.getElementById(`pages-${biblionumber}`).value
+            };
+            
+            await fetch(`/koha_editor/api/records/${biblionumber}`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            });
+            
+            btn.textContent = "Saved ✓";
+            btn.style.background = "#059669";
+            setTimeout(() => { btn.textContent = "Save"; btn.style.background = "var(--primary)"; }, 2000);
+        }
+    </script>
+</body>
+</html>
