@@ -565,6 +565,7 @@
                         <button class="btn btn-outline btn-small btn-danger" onclick="actionDelete()">🗑 Delete</button>
                         <button class="btn btn-outline btn-small" onclick="actionZip()">🗜 Zip</button>
                         <button class="btn btn-outline btn-small" onclick="actionUnzip()">📂 Unzip</button>
+                        <button class="btn btn-outline btn-small btn-danger" onclick="actionRemoveEmptyFolders()">🧹 Remove Empty</button>
                         <div class="toolbar-divider"></div>
                         <span class="toolbar-label">Image:</span>
                         <button class="btn btn-outline btn-small" onclick="actionImageTool('crop')">🖼 Crop</button>
@@ -1229,14 +1230,26 @@
             const res = await fetch('/koha_editor/api/source/organize', {method: 'POST', headers: {'Content-Type':'application/json'}});
             const data = await res.json();
             if(data.success) {
-                showAlert(`Organized: ${(data.merged || []).length} folders merged, ${(data.moved || []).length} files moved.\n${(data.errors || []).join('\n')}`);
+                showAlert(`Organized: ${(data.merged || []).length} folders merged, ${(data.moved || []).length} files moved, ${(data.removed_empty || []).length} empty folders removed.\n${(data.errors || []).join('\n')}`);
                 loadSourceFolder(currentSourcePath);
             } else { showAlert("Error: " + data.error); }
         }
 
+        async function actionRemoveEmptyFolders() {
+            openAppModal('Remove Empty Folders', '<p>This will permanently delete all empty folders under Sources. Continue?</p>', async () => {
+                const res = await fetch('/koha_editor/api/source/remove_empty_folders', {method: 'POST', headers: {'Content-Type':'application/json'}});
+                const data = await res.json();
+                if(data.success) {
+                    showAlert(`Removed ${(data.removed || []).length} empty folders.\n${(data.errors || []).join('\n')}`);
+                    loadSourceFolder(currentSourcePath);
+                } else { showAlert("Error: " + data.error); }
+            }, 'Remove', true);
+        }
+
         async function batchProcessImages() {
             openAppModal('Batch Image Processing',
-                `<p>This will enqueue auto-crop, deskew, auto-rotate, optimize, OCR, metadata extraction and MRC generation for every source folder.</p>
+                `<p>This will enqueue auto-crop, deskew, auto-rotate, autofix, optimize, OCR, metadata extraction and MRC generation for every source folder.</p>
+                 <p>Original images are preserved as <code>_original.ext</code> before any destructive edits.</p>
                  <label><input type="checkbox" id="batch-ocr" checked> Run OCR</label><br>
                  <label><input type="checkbox" id="batch-meta" checked> Extract Metadata</label><br>
                  <label><input type="checkbox" id="batch-mrc" checked> Generate MRC</label>`,

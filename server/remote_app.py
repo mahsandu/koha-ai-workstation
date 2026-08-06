@@ -1820,7 +1820,52 @@ def source_organize():
                 except Exception as e:
                     errors.append(f"move {item}: {e}")
 
-        return jsonify({"success": True, "merged": merged, "moved": moved, "errors": errors})
+        # Third pass: recursively remove empty folders
+        removed_empty = []
+        for root, dirs, files in os.walk(SOURCE_DIR, topdown=False):
+            if root == SOURCE_DIR:
+                continue
+            try:
+                remaining = os.listdir(root)
+            except Exception:
+                continue
+            if not remaining:
+                try:
+                    os.rmdir(root)
+                    removed_empty.append(os.path.relpath(root, SOURCE_DIR).replace('\\', '/'))
+                except Exception as e:
+                    errors.append(f"remove empty {os.path.relpath(root, SOURCE_DIR)}: {e}")
+
+        return jsonify({"success": True, "merged": merged, "moved": moved, "removed_empty": removed_empty, "errors": errors})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/source/remove_empty_folders', methods=['POST'])
+@login_required
+def source_remove_empty_folders():
+    """Recursively remove empty folders under SOURCE_DIR."""
+    removed = []
+    errors = []
+    try:
+        # Walk bottom-up so nested empty folders are removed first
+        for root, dirs, files in os.walk(SOURCE_DIR, topdown=False):
+            if root == SOURCE_DIR:
+                continue
+            # Only remove if directory itself is now empty (no files, no remaining subdirs)
+            try:
+                remaining = os.listdir(root)
+            except Exception:
+                continue
+            if not remaining:
+                try:
+                    os.rmdir(root)
+                    rel = os.path.relpath(root, SOURCE_DIR).replace('\\', '/')
+                    removed.append(rel)
+                except Exception as e:
+                    rel = os.path.relpath(root, SOURCE_DIR).replace('\\', '/')
+                    errors.append(f"{rel}: {e}")
+        return jsonify({"success": True, "removed": removed, "errors": errors})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1860,8 +1905,8 @@ def source_batch_process():
         if not image_paths:
             return jsonify({"error": "No images found"}), 400
 
-        # Queue auto image fixes first: crop, deskew, autofix, optimize
-        fix_tools = ['crop', 'deskew', 'autofix', 'optimize']
+        # Queue auto image fixes first: crop, deskew, rotate, autofix, optimize
+        fix_tools = ['crop', 'deskew', 'rotate', 'autofix', 'optimize']
         for tool in fix_tools:
             _image_tool_queue(image_paths, tool)
 
@@ -2221,74 +2266,84 @@ def ai_worker_loop():
         time.sleep(3)
 
 
+def _ensure_original(input_path):
+    """Preserve original image as _original.<ext> before any destructive edit."""
+    import os, shutil
+    base, ext = os.path.splitext(input_path)
+    original_path = f"{base}_original{ext}"
+    if not os.path.exists(original_path):
+        shutil.copy2(input_path, original_path)
+    return original_path
+
+
 def process_image_tool(input_path, tool, params=None):
     import os, shutil, json
+    from PIL import Image, ImageEnhance, ImageFilter
     params = params or {}
     base, ext = os.path.splitext(input_path)
     output_path = f"{base}_{tool}{ext}"
     try:
+        # Always preserve original before editing the file in-place
+        _ensure_original(input_path)
+
         if tool == 'optimize':
-            # Use ImageMagick if available, otherwise PIL
-            try:
-                subprocess.run(['convert', input_path, '-strip', '-interlace', 'Plane', '-quality', '85', output_path], check=True, timeout=60)
-            except Exception:
-                from PIL import Image
-                img = Image.open(input_path)
-                if img.mode in ('RGBA', 'P'):
-                    img = img.convert('RGB')
-                img.save(output_path, optimize=True, quality=85)
+            img = Image.open(input_path)
+            if img.mode in ('RGBA', 'P'):
+                img = img.convert('RGB')
+            img.save(input_path, optimize=True, quality=85)
         elif tool == 'deskew':
-            try:
-                subprocess.run(['convert', input_path, '-deskew', '40%', output_path], check=True, timeout=60)
-            except Exception:
-                from PIL import Image
-                img = Image.open(input_path)
-                img.save(output_path)
+            # PIL has no built-in deskew; rotate by detected skew angle
+            img = Image.open(input_path).convert('RGB')
+            angle = _detect_skew(img)
+            if abs(angle) > 0.1:
+                img = img.rotate(-angle, expand=True, fillcolor=(255, 255, 255))
+            img.save(input_path)
         elif tool == 'crop':
-            # Auto-crop white borders
-            try:
-                subprocess.run(['convert', input_path, '-trim', '+repage', output_path], check=True, timeout=60)
-            except Exception:
-                from PIL import Image
-                img = Image.open(input_path)
-                bbox = img.convert('RGB').getbbox()
-                if bbox:
-                    img.crop(bbox).save(output_path)
-                else:
-                    shutil.copy2(input_path, output_path)
+            img = Image.open(input_path)
+            bbox = img.convert('RGB').getbbox()
+            if bbox:
+                img.crop(bbox).save(input_path)
         elif tool == 'rotate':
             angle = float(params.get('angle', 90))
-            try:
-                subprocess.run(['convert', input_path, '-rotate', str(angle), output_path], check=True, timeout=60)
-            except Exception:
-                from PIL import Image
-                img = Image.open(input_path).convert('RGB')
-                # PIL rotates counter-clockwise for positive angles; use -angle to match ImageMagick/clockwise
-                img = img.rotate(-angle, expand=True, fillcolor=(255, 255, 255))
-                img.save(output_path)
+            img = Image.open(input_path).convert('RGB')
+            img = img.rotate(-angle, expand=True, fillcolor=(255, 255, 255))
+            img.save(input_path)
         elif tool == 'colorize':
-            try:
-                subprocess.run(['convert', input_path, '-modulate', '110,150', '-contrast-stretch', '2%x2%', output_path], check=True, timeout=60)
-            except Exception:
-                from PIL import Image, ImageEnhance
-                img = Image.open(input_path).convert('RGB')
-                enhancer = ImageEnhance.Color(img)
-                img = enhancer.enhance(1.5)
-                img.save(output_path)
+            img = Image.open(input_path).convert('RGB')
+            enhancer = ImageEnhance.Color(img)
+            img = enhancer.enhance(1.5)
+            img.save(input_path)
         elif tool == 'autofix':
-            try:
-                subprocess.run(['convert', input_path, '-auto-gamma', '-contrast-stretch', '2%x2%', '-sharpen', '0x1', output_path], check=True, timeout=60)
-            except Exception:
-                from PIL import Image, ImageEnhance, ImageFilter
-                img = Image.open(input_path).convert('RGB')
-                img = ImageEnhance.Contrast(img).enhance(1.2)
-                img = ImageEnhance.Sharpness(img).enhance(1.2)
-                img.save(output_path)
+            img = Image.open(input_path).convert('RGB')
+            img = ImageEnhance.Contrast(img).enhance(1.2)
+            img = ImageEnhance.Sharpness(img).enhance(1.2)
+            img.save(input_path)
         else:
             shutil.copy2(input_path, output_path)
-        return {"success": True, "output": os.path.relpath(output_path, SOURCE_DIR).replace('\\', '/')}
+            return {"success": True, "output": os.path.relpath(output_path, SOURCE_DIR).replace('\\', '/')}
+        return {"success": True, "output": os.path.relpath(input_path, SOURCE_DIR).replace('\\', '/')}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+def _detect_skew(img):
+    """Simple skew detection using projection profile. Returns angle in degrees."""
+    import numpy as np
+    try:
+        gray = img.convert('L')
+        arr = np.array(gray)
+        best_angle = 0
+        best_score = 0
+        for angle in range(-15, 16):
+            rotated = np.array(gray.rotate(angle, expand=True, fillcolor=255))
+            proj = rotated.sum(axis=1)
+            score = np.var(proj)
+            if score > best_score:
+                best_score = score
+                best_angle = angle
+        return best_angle
+    except Exception:
+        return 0
 
 
 # Start the worker daemon
