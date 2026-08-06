@@ -16,12 +16,36 @@ logging.basicConfig(filename='/var/www/koha_editor/app.log', level=logging.INFO,
                     format='%(asctime)s %(levelname)s: %(message)s')
 
 import pymysql
+import sqlite3
 
 app = Flask(__name__)
 app.secret_key = 'super_secret_koha_editor_key' # Replace in prod
 
 # The queue for AI tasks
-AI_QUEUE = {}
+
+SQLITE_DB = '/var/www/koha_editor/workstation.db'
+
+def init_sqlite():
+    conn = sqlite3.connect(SQLITE_DB)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS ai_task_queue (
+            task_id TEXT PRIMARY KEY,
+            type TEXT,
+            status TEXT,
+            biblionumber INTEGER,
+            title TEXT,
+            author TEXT,
+            images TEXT,
+            result_data TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_sqlite()
+
 
 # Folder where uploaded images are saved on the server
 IMAGE_DIR = '/var/www/koha_editor/images'
@@ -594,18 +618,15 @@ def start_fixer_batch():
                 rows = cursor.fetchall()
             
             count = 0
+            sq_conn = sqlite3.connect(SQLITE_DB)
+            sq_c = sq_conn.cursor()
             for row in rows:
                 task_id = "FIX_" + str(uuid.uuid4())
-                AI_QUEUE[task_id] = {
-                    "status": "pending",
-                    "type": "db_fix",
-                    "biblionumber": row['biblionumber'],
-                    "title": row['title'],
-                    "author": row['author'],
-                    "images": [],
-                    "result": None
-                }
+                sq_c.execute("INSERT INTO ai_task_queue (task_id, type, status, biblionumber, title, author, images) VALUES (?, ?, ?, ?, ?, ?, ?)", 
+                             (task_id, 'db_fix', 'pending', row['biblionumber'], row['title'], row['author'], '[]'))
                 count += 1
+            sq_conn.commit()
+            sq_conn.close()
             return jsonify({"success": True, "tasks_added": count})
     finally:
         conn.close()
@@ -820,53 +841,52 @@ def queue_status():
 # --- BACKGROUND AI WORKER ---
 
 def ai_worker_loop():
+    import json
     while True:
         try:
-            for task_id, task in list(AI_QUEUE.items()):
-                if task['status'] == 'pending':
-                    task['status'] = 'processing'
+            sq_conn = sqlite3.connect(SQLITE_DB)
+            sq_conn.row_factory = sqlite3.Row
+            sq_c = sq_conn.cursor()
+            sq_c.execute("SELECT * FROM ai_task_queue WHERE status = 'pending' LIMIT 1")
+            task = sq_c.fetchone()
+            
+            if task:
+                task_id = task['task_id']
+                sq_c.execute("UPDATE ai_task_queue SET status = 'processing' WHERE task_id = ?", (task_id,))
+                sq_conn.commit()
+                sq_conn.close()
+                
+                try:
+                    raw_text = ""
+                    ai_json = {}
+                    is_db_fix = (task['type'] == 'db_fix')
                     
-                    try:
-                        raw_text = ""
-                        ai_json = {}
-                        is_db_fix = task.get('type') == 'db_fix'
-                        
-                        if is_db_fix:
-                            # DB Fix Mode: We have Title, need to deduce the rest
-                            biblionumber = task.get('biblionumber')
-                            conn = get_db_connection()
-                            try:
-                                with conn.cursor() as cursor:
-                                    cursor.execute("SELECT metadata FROM koha_mfa.biblio_metadata WHERE biblionumber = %s", (biblionumber,))
-                                    row = cursor.fetchone()
-                                    old_metadata = row['metadata'] if row else ""
-                                    
-                                    # Fetch flat data to give context
-                                    cursor.execute('''
-                                        SELECT b.title, b.author, bi.publishercode, bi.publicationyear, bi.pages
-                                        FROM koha_mfa.biblio b 
-                                        LEFT JOIN koha_mfa.biblioitems bi ON b.biblionumber = bi.biblionumber 
-                                        WHERE b.biblionumber = %s
-                                    ''', (biblionumber,))
-                                    b_row = cursor.fetchone()
-                                    raw_text = f"Title: {b_row['title']}\nAuthor: {b_row['author']}\nPublisher: {b_row['publishercode']}"
-                            finally:
-                                conn.close()
+                    if is_db_fix:
+                        biblionumber = task['biblionumber']
+                        conn = get_db_connection()
+                        try:
+                            with conn.cursor() as cursor:
+                                cursor.execute("SELECT metadata FROM koha_mfa.biblio_metadata WHERE biblionumber = %s", (biblionumber,))
+                                row = cursor.fetchone()
+                                old_metadata = row['metadata'] if row else ""
                                 
-                        else:
-                            # OCR Mode
-                            img_name = task['images'][0]
-                            img_path = os.path.join(IMAGE_DIR, img_name)
+                                cursor.execute('''SELECT b.title, b.author, bi.publishercode, bi.publicationyear, bi.pages
+                                    FROM koha_mfa.biblio b 
+                                    LEFT JOIN koha_mfa.biblioitems bi ON b.biblionumber = bi.biblionumber 
+                                    WHERE b.biblionumber = %s''', (biblionumber,))
+                                b_row = cursor.fetchone()
+                                raw_text = f"Title: {b_row['title']}\nAuthor: {b_row['author']}\nPublisher: {b_row['publishercode']}"
+                        finally:
+                            conn.close()
                             
+                    else:
+                        images = json.loads(task['images']) if task['images'] else []
+                        if images:
+                            img_name = images[0]
+                            img_path = os.path.join(IMAGE_DIR, img_name)
                             with open(img_path, 'rb') as f:
                                 encoded_string = base64.b64encode(f.read()).decode('utf-8')
-                                
-                            ocr_payload = {
-                                'apikey': 'helloworld',
-                                'base64Image': 'data:image/jpeg;base64,' + encoded_string,
-                                'language': 'eng'
-                            }
-                            
+                            ocr_payload = {'apikey': 'helloworld', 'base64Image': 'data:image/jpeg;base64,' + encoded_string, 'language': 'eng'}
                             try:
                                 ocr_res = requests.post('https://api.ocr.space/parse/image', data=ocr_payload, timeout=15)
                                 ocr_data = ocr_res.json()
@@ -875,112 +895,108 @@ def ai_worker_loop():
                                         raw_text += parsed.get('ParsedText', '') + " "
                             except Exception as e:
                                 raw_text = "FAILED TO EXTRACT TEXT: " + str(e)
-                                
-                            if not raw_text.strip():
-                                raw_text = "UNKNOWN TEXT"
-                                
-                        # Local vLLM/Ollama Extraction (DeepSeek-R1)
-                        if is_db_fix:
-                            prompt = f"Fix the missing catalog metadata for this book. Output strictly as JSON with keys: title, author, publishercode, publicationyear, isbn, ddc, subjects. Guess missing data (like author and DDC) based on the title. Do not include any other text.\n\nBook Info:\n{raw_text}"
-                        else:
-                            prompt = f"Extract metadata from the following OCR text of a book cover/title page. Output strictly as JSON with keys: title, author, publishercode, publicationyear, isbn, ddc, subjects.\nDo not include any other text.\n\nText:\n{raw_text}"
+                        if not raw_text.strip():
+                            raw_text = "UNKNOWN TEXT"
                             
-                        ollama_payload = {
-                            "model": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
-                            "messages": [{"role": "user", "content": prompt}],
-                            "temperature": 0.0
-                        }
+                    if is_db_fix:
+                        prompt = f"Fix the missing catalog metadata for this book. Output strictly as JSON with keys: title, author, publishercode, publicationyear, isbn, ddc, subjects. Guess missing data (like author and DDC) based on the title. Do not include any other text.\n\nBook Info:\n{raw_text}"
+                    else:
+                        prompt = f"Extract metadata from the following OCR text of a book cover/title page. Output strictly as JSON with keys: title, author, publishercode, publicationyear, isbn, ddc, subjects.\nDo not include any other text.\n\nText:\n{raw_text}"
                         
+                    ollama_payload = {"model": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B", "messages": [{"role": "user", "content": prompt}], "temperature": 0.0}
+                    
+                    try:
+                        res = requests.post('http://localhost:8000/v1/chat/completions', json=ollama_payload, timeout=30)
+                        ai_text = res.json()['choices'][0]['message']['content']
+                    except:
                         try:
-                            res = requests.post('http://localhost:8000/v1/chat/completions', json=ollama_payload, timeout=30)
-                            ai_text = res.json()['choices'][0]['message']['content']
+                            ollama_payload_fallback = {"model": "qwen2.5", "prompt": prompt, "stream": False}
+                            res = requests.post('http://localhost:11434/api/generate', json=ollama_payload_fallback, timeout=30)
+                            ai_text = res.json().get('response', '')
+                        except Exception as e:
+                            ai_text = '{"title": "AI Offline", "author": "Check Server"}'
+                    
+                    ai_text = re.sub(r'<think>.*?</think>', '', ai_text, flags=re.DOTALL).strip()
+                    json_match = re.search(r'\{.*?\}', ai_text, flags=re.DOTALL)
+                    if json_match:
+                        try:
+                            ai_json = json.loads(json_match.group(0))
                         except:
-                            try:
-                                ollama_payload_fallback = {"model": "qwen2.5", "prompt": prompt, "stream": False}
-                                res = requests.post('http://localhost:11434/api/generate', json=ollama_payload_fallback, timeout=30)
-                                ai_text = res.json().get('response', '')
-                            except Exception as e:
-                                ai_text = '{"title": "AI Offline", "author": "Check Server"}'
+                            ai_json = {"title": "JSON Parse Error", "author": "Error"}
+                    else:
+                        ai_json = {"title": "Extraction Failed", "author": "Failed"}
                         
-                        ai_text = re.sub(r'<think>.*?</think>', '', ai_text, flags=re.DOTALL).strip()
-                        json_match = re.search(r'\{.*?\}', ai_text, flags=re.DOTALL)
-                        if json_match:
-                            try:
-                                ai_json = json.loads(json_match.group(0))
-                            except:
-                                ai_json = {"title": "JSON Parse Error", "author": "Error"}
-                        else:
-                            ai_json = {"title": "Extraction Failed", "author": "Failed"}
+                    final_ddc = ai_json.get("ddc", "")
+                    final_subjects = ai_json.get("subjects", "")
+                    isbn_to_check = ai_json.get('isbn', '')
+                    
+                    if not is_db_fix:
+                        isbn_match = re.search(r'(?:ISBN(?:-1[03])?:? )?(?=[0-9X]{10}$|(?=(?:[0-9]+[- ]){3})[- 0-9X]{13}$|97[89][0-9]{10}$|(?=(?:[0-9]+[- ]){4})[- 0-9]{17}$)(?:97[89][- ]?)?[0-9]{1,5}[- ]?[0-9]+[- ]?[0-9]+[- ]?[0-9X]', raw_text, re.IGNORECASE)
+                        if not isbn_to_check and isbn_match:
+                            isbn_to_check = re.sub(r'[^0-9X]', '', isbn_match.group(0).upper())
                             
-                        # OpenLibrary Priority Check
-                        final_ddc = ai_json.get("ddc", "")
-                        final_subjects = ai_json.get("subjects", "")
-                        isbn_to_check = ai_json.get('isbn', '')
-                        
-                        if not is_db_fix:
-                            isbn_match = re.search(r'(?:ISBN(?:-1[03])?:? )?(?=[0-9X]{10}$|(?=(?:[0-9]+[- ]){3})[- 0-9X]{13}$|97[89][0-9]{10}$|(?=(?:[0-9]+[- ]){4})[- 0-9]{17}$)(?:97[89][- ]?)?[0-9]{1,5}[- ]?[0-9]+[- ]?[0-9]+[- ]?[0-9X]', raw_text, re.IGNORECASE)
-                            if not isbn_to_check and isbn_match:
-                                isbn_to_check = re.sub(r'[^0-9X]', '', isbn_match.group(0).upper())
-                                
-                        if isbn_to_check:
-                            try:
-                                ol_res = requests.get(f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn_to_check}&jscmd=data&format=json", timeout=10)
-                                ol_data = ol_res.json()
-                                book_key = f"ISBN:{isbn_to_check}"
-                                if book_key in ol_data:
-                                    book_info = ol_data[book_key]
-                                    if "classifications" in book_info and "dewey_decimal_class" in book_info["classifications"]:
-                                        final_ddc = book_info["classifications"]["dewey_decimal_class"][0]
-                                    if "subjects" in book_info:
-                                        final_subjects = ", ".join([s['name'] for s in book_info["subjects"]][:3])
-                            except:
-                                pass
-                                
-                        result_data = {
-                            "title": ai_json.get("title", ""),
-                            "author": ai_json.get("author", ""),
-                            "publishercode": ai_json.get("publishercode", ""),
-                            "publicationyear": ai_json.get("publicationyear", ""),
-                            "isbn": isbn_to_check,
-                            "ddc": final_ddc,
-                            "subjects": final_subjects,
-                            "raw_ocr": raw_text[:500] + "..."
-                        }
+                    if isbn_to_check:
+                        try:
+                            ol_res = requests.get(f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn_to_check}&jscmd=data&format=json", timeout=10)
+                            ol_data = ol_res.json()
+                            book_key = f"ISBN:{isbn_to_check}"
+                            if book_key in ol_data:
+                                book_info = ol_data[book_key]
+                                if "classifications" in book_info and "dewey_decimal_class" in book_info["classifications"]:
+                                    final_ddc = book_info["classifications"]["dewey_decimal_class"][0]
+                                if "subjects" in book_info:
+                                    final_subjects = ", ".join([s['name'] for s in book_info["subjects"]][:3])
+                        except:
+                            pass
                             
-                        # AUTO UPDATE DB FOR DB_FIX
-                        if is_db_fix:
-                            conn = get_db_connection()
-                            try:
-                                with conn.cursor() as cursor:
-                                    # Backup old XML
-                                    cursor.execute("INSERT INTO koha_mfa.biblio_history (biblionumber, old_metadata) VALUES (%s, %s)", (biblionumber, old_metadata))
-                                    
-                                    new_title = result_data['title'] or b_row['title']
-                                    new_author = result_data['author'] or b_row['author']
-                                    new_pub = result_data['publishercode'] or b_row['publishercode']
-                                    new_year = result_data['publicationyear'] or b_row['publicationyear']
-                                    
-                                    cursor.execute("UPDATE koha_mfa.biblio SET title = %s, author = %s WHERE biblionumber = %s", 
-                                                   (new_title, new_author, biblionumber))
-                                    cursor.execute("UPDATE koha_mfa.biblioitems SET publishercode = %s, publicationyear = %s WHERE biblionumber = %s", 
-                                                   (new_pub, new_year, biblionumber))
-                                    conn.commit()
-                                    logging.info(f"Auto-fixed DB for biblionumber {biblionumber} and saved history.")
-                            except Exception as db_err:
-                                logging.error(f"Failed DB auto-fix: {db_err}")
-                            finally:
-                                conn.close()
-                                
-                        task['result'] = result_data
-                        task['status'] = 'completed'
-                        logging.info(f"Task {task_id} completed successfully.")
+                    result_data = {
+                        "title": ai_json.get("title", ""),
+                        "author": ai_json.get("author", ""),
+                        "publishercode": ai_json.get("publishercode", ""),
+                        "publicationyear": ai_json.get("publicationyear", ""),
+                        "isbn": isbn_to_check,
+                        "ddc": final_ddc,
+                        "subjects": final_subjects,
+                        "raw_ocr": raw_text[:500] + "..."
+                    }
                         
-                    except Exception as e:
-                        task['status'] = 'error'
-                        task['result'] = {"error": str(e)}
-                        logging.error(f"Task {task_id} failed with error: {str(e)}")
-        except Exception:
-            pass
+                    if is_db_fix:
+                        conn = get_db_connection()
+                        try:
+                            with conn.cursor() as cursor:
+                                cursor.execute("INSERT INTO koha_mfa.biblio_history (biblionumber, old_metadata) VALUES (%s, %s)", (biblionumber, old_metadata))
+                                new_title = result_data['title'] or b_row['title']
+                                new_author = result_data['author'] or b_row['author']
+                                new_pub = result_data['publishercode'] or b_row['publishercode']
+                                new_year = result_data['publicationyear'] or b_row['publicationyear']
+                                cursor.execute("UPDATE koha_mfa.biblio SET title = %s, author = %s WHERE biblionumber = %s", (new_title, new_author, biblionumber))
+                                cursor.execute("UPDATE koha_mfa.biblioitems SET publishercode = %s, publicationyear = %s WHERE biblionumber = %s", (new_pub, new_year, biblionumber))
+                                conn.commit()
+                        except Exception as db_err:
+                            logging.error(f"Failed DB auto-fix: {db_err}")
+                        finally:
+                            conn.close()
+                            
+                    # Update SQLite
+                    sq_conn2 = sqlite3.connect(SQLITE_DB)
+                    sq_c2 = sq_conn2.cursor()
+                    sq_c2.execute("UPDATE ai_task_queue SET status = 'completed', result_data = ? WHERE task_id = ?", (json.dumps(result_data), task_id))
+                    sq_conn2.commit()
+                    sq_conn2.close()
+                    logging.info(f"Task {task_id} completed.")
+                    
+                except Exception as e:
+                    sq_conn3 = sqlite3.connect(SQLITE_DB)
+                    sq_c3 = sq_conn3.cursor()
+                    sq_c3.execute("UPDATE ai_task_queue SET status = 'error', result_data = ? WHERE task_id = ?", (json.dumps({"error": str(e)}), task_id))
+                    sq_conn3.commit()
+                    sq_conn3.close()
+                    logging.error(f"Task {task_id} failed: {e}")
+            else:
+                sq_conn.close()
+                
+        except Exception as ex:
+            logging.error(f"Daemon Loop Error: {ex}")
             
         time.sleep(3)
 

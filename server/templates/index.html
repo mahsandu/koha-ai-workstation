@@ -518,8 +518,8 @@
     </div>
 
     <script>
-        // --- NAVIGATION ---
-        function switchTab(tab) {
+        // --- NAVIGATION & URL STATE ---
+        function switchTab(tab, pushState = true) {
             document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             
@@ -528,11 +528,36 @@
             
             document.getElementById(`tab-${tab}`).classList.add('active');
             
+            if(pushState) {
+                const url = new URL(window.location);
+                url.hash = tab;
+                window.history.pushState({}, '', url);
+            }
+            
             if(tab === 'browser' && document.getElementById('records-body').innerHTML.includes('Loading')) {
                 loadStats(); loadRecords();
             }
             if(tab === 'queue') fetchQueueStatus();
         }
+        
+        window.addEventListener('popstate', () => {
+            restoreStateFromUrl();
+        });
+        
+        function restoreStateFromUrl() {
+            const url = new URL(window.location);
+            const tab = url.hash.replace('#', '') || 'browser';
+            const page = parseInt(url.searchParams.get('page')) || 1;
+            
+            currentPage = page;
+            switchTab(tab, false);
+            
+            if(tab === 'browser') {
+                loadStats();
+                loadRecords();
+            }
+        }
+
 
         // --- AI PROCESSOR UPLOAD ---
         let folders = {}; let folderKeys = [];
@@ -580,7 +605,18 @@
         }
 
         // --- QUEUE MONITOR ---
+        
+        async function requeueTask(taskId) {
+            const res = await fetch(`/koha_editor/api/queue/requeue/${taskId}`, {method: 'POST'});
+            const data = await res.json();
+            if(data.success) {
+                alert("Task requeued successfully!");
+                fetchQueueStatus();
+            }
+        }
+        
         async function fetchQueueStatus() {
+
             const res = await fetch('/koha_editor/api/queue/status');
             const data = await res.json();
             const tbody = document.getElementById('queue-body');
@@ -606,7 +642,10 @@
                     <td>${title}</td>
                     <td>${author}</td>
                     <td><span class="badge" style="background:#fef3c7; color:#d97706; padding: 2px 6px; border-radius: 4px;">${ddc}</span></td>
-                    <td><small style="color: #64748b;">${subjects}</small></td>
+                    <td>
+                        <small style="color: #64748b;">${subjects}</small><br>
+                        ${task.status === 'error' || task.status === 'completed' ? `<button class="btn btn-small btn-outline" style="margin-top:5px; padding: 2px 5px;" onclick="requeueTask('${taskId}')">↺ Requeue</button>` : ''}
+                    </td>
                 </tr>
                 `;
             }).join('');
