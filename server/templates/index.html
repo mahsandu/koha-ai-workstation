@@ -233,6 +233,17 @@
             #labels-print-area { position: absolute; left: 0; top: 0; width: 100%; }
             .label-card { break-inside: avoid; border: 1px solid black; }
         }
+    
+        @media (max-width: 900px) {
+            .editor-split {
+                grid-template-columns: 1fr !important;
+                gap: 20px;
+            }
+            .items-panel {
+                order: 2;
+            }
+        }
+
     </style>
 </head>
 <body>
@@ -385,7 +396,7 @@
                         <div style="background: #f3f4f6; padding: 10px; border-radius: 6px; margin-bottom: 15px;">
                             <strong>Add New Item</strong>
                             <div style="display:flex; gap: 5px; margin-top:5px;">
-                                <input type="text" id="new-item-barcode" placeholder="Barcode" style="flex:1;">
+                                <input type="text" id="new-item-barcode" placeholder="Barcode or Range (e.g. 10001-10005)" style="flex:1;">
                                 <button class="btn btn-small" onclick="autoSuggestBarcode()" title="Find lowest missing barcode gap">Find Gap</button>
                             </div>
                             <div style="display:flex; gap: 5px; margin-top:5px;">
@@ -742,16 +753,60 @@
             let cn = `${dewey} ${authorCutter}`.trim();
             document.getElementById('new-item-callnumber').value = cn;
         }
+        
         async function createNewItem() {
             const biblio = cachedRecords[currentBiblioIndex];
-            const barcode = document.getElementById('new-item-barcode').value;
-            const cn = document.getElementById('new-item-callnumber').value;
-            if(!barcode) return alert("Barcode is required!");
-            const res = await fetch('/koha_editor/api/items', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ biblionumber: biblio.biblionumber, barcode: barcode, itemcallnumber: cn }) });
-            const data = await res.json();
-            if(data.error) alert(data.error);
-            else { document.getElementById('new-item-barcode').value = ''; loadItems(biblio.biblionumber); }
+            const bcInput = document.getElementById('new-item-barcode').value.trim();
+            const cn = document.getElementById('new-item-callnumber').value.trim();
+            if(!bcInput) return alert("Barcode is required");
+            
+            let barcodes = [];
+            if(bcInput.includes('-')) {
+                const parts = bcInput.split('-');
+                const startStr = parts[0].trim();
+                const endStr = parts[1].trim();
+                
+                let prefix = "";
+                for(let i=0; i<startStr.length; i++) {
+                    if(!/^[0-9]$/.test(startStr[i])) prefix += startStr[i];
+                    else break;
+                }
+                
+                try {
+                    const sNum = parseInt(startStr.replace(prefix, ''));
+                    const eNum = parseInt(endStr.replace(prefix, ''));
+                    for(let i=sNum; i<=eNum; i++) barcodes.push(prefix + i);
+                } catch(e) {
+                    barcodes.push(bcInput); // Fallback
+                }
+            } else {
+                barcodes.push(bcInput);
+            }
+            
+            let added = 0;
+            const btn = event.target;
+            const oldText = btn.textContent;
+            btn.textContent = "Processing...";
+            
+            for(let bc of barcodes) {
+                const res = await fetch('/koha_editor/api/items', { 
+                    method: 'POST', 
+                    headers: {'Content-Type': 'application/json'}, 
+                    body: JSON.stringify({ biblionumber: biblio.biblionumber, barcode: bc, itemcallnumber: cn }) 
+                });
+                const data = await res.json();
+                if(data.error) alert(`Error adding ${bc}: ` + data.error);
+                else added++;
+            }
+            
+            btn.textContent = oldText;
+            if(added > 0) { 
+                document.getElementById('new-item-barcode').value = ''; 
+                loadItems(biblio.biblionumber); 
+                alert(`Successfully generated ${added} item(s)!`);
+            }
         }
+
         async function updateItem(idx) {
             const item = currentItems[idx];
             const barcode = document.getElementById(`item-bc-${idx}`).value;
