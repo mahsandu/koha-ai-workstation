@@ -700,6 +700,7 @@ def queue_status():
     return jsonify({"queue": AI_QUEUE})
 
 
+
 # --- BACKGROUND AI WORKER ---
 def ai_worker_loop():
     while True:
@@ -736,7 +737,7 @@ def ai_worker_loop():
                             raw_text = "UNKNOWN TEXT"
                             
                         # 2. Local vLLM/Ollama Extraction (DeepSeek-R1)
-                        prompt = f"Extract the title, author, publisher, and year from the following OCR text. Output strictly as JSON with keys: title, author, publishercode, publicationyear. Do not include any other text.\n\nText:\n{raw_text}"
+                        prompt = f"Extract metadata from the following OCR text of a book cover/title page. Output strictly as JSON with the following keys:\n- title: (string)\n- author: (string)\n- publishercode: (string)\n- publicationyear: (string)\n- isbn: (string, 10 or 13 digits if found, else empty)\n- ddc: (string, 3-digit Dewey Decimal notation based on the topic, e.g. 004)\n- subjects: (comma separated string of 2-3 main topics)\n\nDo not include any other text or explanation. Output only valid JSON.\nText:\n{raw_text}"
                         
                         ollama_payload = {
                             "model": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
@@ -774,11 +775,39 @@ def ai_worker_loop():
                         else:
                             ai_json = {"title": "Extraction Failed", "author": "Failed"}
                             
+                        
+                        # 3. OpenLibrary Priority Check
+                        final_ddc = ai_json.get("ddc", "")
+                        final_subjects = ai_json.get("subjects", "")
+                        
+                        # Try regex for ISBN just in case AI missed it
+                        isbn_match = re.search(r'(?:ISBN(?:-1[03])?:? )?(?=[0-9X]{10}$|(?=(?:[0-9]+[- ]){3})[- 0-9X]{13}$|97[89][0-9]{10}$|(?=(?:[0-9]+[- ]){4})[- 0-9]{17}$)(?:97[89][- ]?)?[0-9]{1,5}[- ]?[0-9]+[- ]?[0-9]+[- ]?[0-9X]', raw_text, re.IGNORECASE)
+                        isbn_to_check = ai_json.get('isbn', '')
+                        if not isbn_to_check and isbn_match:
+                            isbn_to_check = re.sub(r'[^0-9X]', '', isbn_match.group(0).upper())
+                            
+                        if isbn_to_check:
+                            try:
+                                ol_res = requests.get(f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn_to_check}&jscmd=data&format=json", timeout=10)
+                                ol_data = ol_res.json()
+                                book_key = f"ISBN:{isbn_to_check}"
+                                if book_key in ol_data:
+                                    book_info = ol_data[book_key]
+                                    if "classifications" in book_info and "dewey_decimal_class" in book_info["classifications"]:
+                                        final_ddc = book_info["classifications"]["dewey_decimal_class"][0]
+                                    if "subjects" in book_info:
+                                        final_subjects = ", ".join([s['name'] for s in book_info["subjects"]][:3])
+                            except:
+                                pass
+                            
                         task['result'] = {
                             "title": ai_json.get("title", ""),
                             "author": ai_json.get("author", ""),
                             "publishercode": ai_json.get("publishercode", ""),
                             "publicationyear": ai_json.get("publicationyear", ""),
+                            "isbn": isbn_to_check,
+                            "ddc": final_ddc,
+                            "subjects": final_subjects,
                             "raw_ocr": raw_text[:500] + "..."
                         }
                         task['status'] = 'completed'
@@ -792,9 +821,6 @@ def ai_worker_loop():
             pass
             
         time.sleep(3)
-
-# Start background thread
-threading.Thread(target=ai_worker_loop, daemon=True).start()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5050)
