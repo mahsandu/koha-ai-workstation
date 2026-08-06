@@ -321,6 +321,16 @@
             }
         }
 
+        const marcLabels = {
+            '020': 'ISBN', '022': 'ISSN', '040': 'Cataloging Source', '082': 'DDC Call Number',
+            '100': 'Author', '110': 'Corporate Author', '130': 'Uniform Title',
+            '245': 'Title Statement', '250': 'Edition Statement', '260': 'Publication', '264': 'Publication',
+            '300': 'Physical Description', '336': 'Content Type', '337': 'Media Type', '338': 'Carrier Type',
+            '490': 'Series Statement', '500': 'General Note', '504': 'Bibliography Note',
+            '505': 'Contents Note', '520': 'Summary Note', '650': 'Subject', '700': 'Added Entry',
+            'LDR': 'Leader'
+        };
+
         function renderMarcEditor() {
             const container = document.getElementById('marc-editor-fields');
             container.innerHTML = '';
@@ -343,13 +353,18 @@
                     subfieldsHtml += `<button class="btn btn-outline btn-small" style="align-self:flex-start; margin-top:5px;" onclick="addSubfield(${fIdx})">+ Subfield</button>`;
                 }
                 
+                const label = marcLabels[field.tag] || 'Custom Field';
+                
                 const div = document.createElement('div');
                 div.className = 'marc-field';
                 div.innerHTML = `
                     <div>
                         <button class="remove-btn" onclick="removeField(${fIdx})" title="Remove Entire Field">×</button>
                     </div>
-                    <input type="text" class="marc-tag" value="${field.tag}" onchange="updateMarcTag(${fIdx}, this.value)">
+                    <div style="display:flex; flex-direction:column; align-items:center; width: 100px;">
+                        <input type="text" class="marc-tag" value="${field.tag}" onchange="updateMarcTag(${fIdx}, this.value)" style="width: 100%; box-sizing:border-box;">
+                        <span style="font-size:0.75rem; color:var(--text-light); text-align:center; margin-top:3px; font-weight:600;">${label}</span>
+                    </div>
                     ${!isControl ? `
                         <input type="text" class="marc-ind" value="${field.ind1}" onchange="updateMarcInd(${fIdx}, 1, this.value)" maxlength="1" title="Indicator 1">
                         <input type="text" class="marc-ind" value="${field.ind2}" onchange="updateMarcInd(${fIdx}, 2, this.value)" maxlength="1" title="Indicator 2">
