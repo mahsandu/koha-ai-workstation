@@ -5,6 +5,9 @@ import threading
 import time
 import bcrypt
 import xml.etree.ElementTree as ET
+import requests
+import base64
+import re
 from flask import Flask, jsonify, render_template, request, session, redirect, url_for, send_from_directory
 import pymysql
 
@@ -696,5 +699,103 @@ def check_ai(task_id):
 def queue_status():
     return jsonify({"queue": AI_QUEUE})
 
+
+# --- BACKGROUND AI WORKER ---
+def ai_worker_loop():
+    while True:
+        try:
+            for task_id, task in list(AI_QUEUE.items()):
+                if task['status'] == 'pending':
+                    task['status'] = 'processing'
+                    
+                    try:
+                        # 1. Cloud OCR
+                        img_name = task['images'][0]
+                        img_path = os.path.join(IMAGE_DIR, img_name)
+                        
+                        with open(img_path, 'rb') as f:
+                            encoded_string = base64.b64encode(f.read()).decode('utf-8')
+                            
+                        ocr_payload = {
+                            'apikey': 'helloworld',
+                            'base64Image': 'data:image/jpeg;base64,' + encoded_string,
+                            'language': 'eng'
+                        }
+                        
+                        try:
+                            ocr_res = requests.post('https://api.ocr.space/parse/image', data=ocr_payload, timeout=15)
+                            ocr_data = ocr_res.json()
+                            raw_text = ""
+                            if not ocr_data.get('IsErroredOnProcessing'):
+                                for parsed in ocr_data.get('ParsedResults', []):
+                                    raw_text += parsed.get('ParsedText', '') + " "
+                        except Exception as e:
+                            raw_text = "FAILED TO EXTRACT TEXT: " + str(e)
+                            
+                        if not raw_text.strip():
+                            raw_text = "UNKNOWN TEXT"
+                            
+                        # 2. Local vLLM/Ollama Extraction (DeepSeek-R1)
+                        prompt = f"Extract the title, author, publisher, and year from the following OCR text. Output strictly as JSON with keys: title, author, publishercode, publicationyear. Do not include any other text.\n\nText:\n{raw_text}"
+                        
+                        ollama_payload = {
+                            "model": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
+                            "messages": [{"role": "user", "content": prompt}],
+                            "temperature": 0.0
+                        }
+                        
+                        try:
+                            # Try vLLM first
+                            res = requests.post('http://localhost:8000/v1/chat/completions', json=ollama_payload, timeout=30)
+                            ai_text = res.json()['choices'][0]['message']['content']
+                        except:
+                            try:
+                                # Fallback to Ollama if vLLM is down
+                                ollama_payload_fallback = {
+                                    "model": "qwen2.5",
+                                    "prompt": prompt,
+                                    "stream": False
+                                }
+                                res = requests.post('http://localhost:11434/api/generate', json=ollama_payload_fallback, timeout=30)
+                                ai_text = res.json().get('response', '')
+                            except Exception as e:
+                                ai_text = '{"title": "AI Offline", "author": "Check Server"}'
+                        
+                        # Clean DeepSeek think tags
+                        ai_text = re.sub(r'<think>.*?</think>', '', ai_text, flags=re.DOTALL).strip()
+                        
+                        # Extract JSON
+                        json_match = re.search(r'\{.*?\}', ai_text, flags=re.DOTALL)
+                        if json_match:
+                            try:
+                                ai_json = json.loads(json_match.group(0))
+                            except:
+                                ai_json = {"title": "JSON Parse Error", "author": "Error"}
+                        else:
+                            ai_json = {"title": "Extraction Failed", "author": "Failed"}
+                            
+                        task['result'] = {
+                            "title": ai_json.get("title", ""),
+                            "author": ai_json.get("author", ""),
+                            "publishercode": ai_json.get("publishercode", ""),
+                            "publicationyear": ai_json.get("publicationyear", ""),
+                            "raw_ocr": raw_text[:500] + "..."
+                        }
+                        task['status'] = 'completed'
+                        
+                        # (Optional) Auto-insert into DB logic could go here
+                        
+                    except Exception as e:
+                        task['status'] = 'error'
+                        task['result'] = {"error": str(e)}
+        except Exception:
+            pass
+            
+        time.sleep(3)
+
+# Start background thread
+threading.Thread(target=ai_worker_loop, daemon=True).start()
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5050)
+
