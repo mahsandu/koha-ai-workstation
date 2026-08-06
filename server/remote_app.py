@@ -8,7 +8,13 @@ import xml.etree.ElementTree as ET
 import requests
 import base64
 import re
+import logging
 from flask import Flask, jsonify, render_template, request, session, redirect, url_for, send_from_directory
+
+# Setup server logging
+logging.basicConfig(filename='/var/www/koha_editor/app.log', level=logging.INFO, 
+                    format='%(asctime)s %(levelname)s: %(message)s')
+
 import pymysql
 
 app = Flask(__name__)
@@ -534,6 +540,18 @@ def check_duplicate_biblio():
 
 
 
+
+# --- LOGS VIEWER ---
+@app.route('/api/logs')
+@login_required
+def view_logs():
+    try:
+        with open('/var/www/koha_editor/app.log', 'r') as f:
+            lines = f.readlines()
+            return jsonify({"logs": "".join(lines[-200:])}) # Return last 200 lines
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
 # --- ADMIN SETTINGS ---
 @app.route('/api/settings', methods=['GET', 'POST'])
 @login_required
@@ -810,13 +828,19 @@ def ai_worker_loop():
                             "subjects": final_subjects,
                             "raw_ocr": raw_text[:500] + "..."
                         }
+                        
                         task['status'] = 'completed'
+                        logging.info(f"Task {task_id} completed successfully for image {img_name}. Title extracted: {ai_json.get('title')}")
+
                         
                         # (Optional) Auto-insert into DB logic could go here
                         
+
                     except Exception as e:
                         task['status'] = 'error'
                         task['result'] = {"error": str(e)}
+                        logging.error(f"Task {task_id} failed with error: {str(e)}")
+
         except Exception:
             pass
             

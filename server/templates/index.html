@@ -34,7 +34,25 @@
         }
 
         // --- SETTINGS ---
+        
+        async function fetchLogs() {
+            const box = document.getElementById('server-logs-box');
+            box.value = "Fetching logs...";
+            try {
+                const res = await fetch('/koha_editor/api/logs');
+                const data = await res.json();
+                if(data.error) box.value = "Error: " + data.error;
+                else {
+                    box.value = data.logs || "No logs available.";
+                    box.scrollTop = box.scrollHeight; // auto scroll to bottom
+                }
+            } catch(e) {
+                box.value = "Failed to connect to server.";
+            }
+        }
+        
         async function loadSettings() {
+
             const res = await fetch('/koha_editor/api/settings');
             if(res.status === 403) {
                 document.getElementById('settings-error').textContent = "You do not have Superuser permissions to view or edit these settings.";
@@ -384,7 +402,14 @@
                     <input type="number" id="cfg-ipp" style="width:100%;">
                 </div>
                 
-                <button class="btn" style="width:100%;" onclick="saveSettings()">Save Configuration</button>
+                
+                <button class="btn" style="width:100%; margin-bottom: 20px;" onclick="saveSettings()">Save Configuration</button>
+                
+                <hr style="margin: 20px 0; border: 1px solid var(--border-color);">
+                <h2>Server Logs (Live AI Activity)</h2>
+                <button class="btn btn-outline" style="width:100%; margin-bottom: 15px;" onclick="fetchLogs()">Refresh Logs</button>
+                <textarea id="server-logs-box" style="width:100%; height: 300px; background: #1e293b; color: #38bdf8; font-family: monospace; font-size: 0.85rem; padding: 10px; border-radius: 4px; border: none;" readonly>Click 'Refresh Logs' to load /var/www/koha_editor/app.log</textarea>
+
             </div>
         </div>
 
@@ -727,7 +752,25 @@
         }
 
         // --- SETTINGS ---
+        
+        async function fetchLogs() {
+            const box = document.getElementById('server-logs-box');
+            box.value = "Fetching logs...";
+            try {
+                const res = await fetch('/koha_editor/api/logs');
+                const data = await res.json();
+                if(data.error) box.value = "Error: " + data.error;
+                else {
+                    box.value = data.logs || "No logs available.";
+                    box.scrollTop = box.scrollHeight; // auto scroll to bottom
+                }
+            } catch(e) {
+                box.value = "Failed to connect to server.";
+            }
+        }
+        
         async function loadSettings() {
+
             const res = await fetch('/koha_editor/api/settings');
             if(res.status === 403) {
                 document.getElementById('settings-error').textContent = "You do not have Superuser permissions to view or edit these settings.";
