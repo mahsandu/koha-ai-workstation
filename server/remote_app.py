@@ -9,7 +9,10 @@ import requests
 import base64
 import re
 import logging
-from flask import Flask, jsonify, render_template, request, session, redirect, url_for, send_from_directory, Blueprint
+import shutil
+import zipfile
+import subprocess
+from flask import Flask, jsonify, render_template, request, session, redirect, url_for, send_from_directory, Blueprint, send_file
 
 # Setup server logging
 logging.basicConfig(filename='/var/www/koha_editor/app.log', level=logging.INFO, 
@@ -17,6 +20,16 @@ logging.basicConfig(filename='/var/www/koha_editor/app.log', level=logging.INFO,
 
 import pymysql
 import sqlite3
+
+try:
+    import config as app_config
+except Exception:
+    app_config = None
+
+try:
+    from google import genai as google_genai
+except Exception:
+    google_genai = None
 
 app = Flask(__name__)
 
@@ -142,6 +155,118 @@ def get_db_connection():
     )
 
 
+def get_gemini_api_key():
+    key = ""
+    if app_config and hasattr(app_config, 'GEMINI_API_KEY'):
+        key = str(getattr(app_config, 'GEMINI_API_KEY') or '').strip()
+    if not key:
+        key = os.environ.get("GEMINI_API_KEY", "").strip()
+    return key
+
+
+def call_gemini(prompt, model='gemini-2.5-flash'):
+    if google_genai is None:
+        raise RuntimeError("google-genai package is not installed")
+    api_key = get_gemini_api_key()
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+
+    client = google_genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=model,
+        contents=prompt
+    )
+    text = (getattr(response, 'text', None) or '').strip()
+    if not text:
+        raise RuntimeError("Gemini returned an empty response")
+    return text
+
+
+def call_local_ai(prompt, model_hint='gemma3:4b'):
+    # Server-side local AI endpoints are tried first; tunneled remote is last resort.
+    local_bases = [
+        'http://127.0.0.1:8000',     # server-local Ollama/vLLM (primary)
+        'http://127.0.0.1:11434',    # server-local Ollama native port
+        'http://127.0.0.1:5000',     # server-local alternative API port
+    ]
+    configured_base = os.environ.get('LOCAL_AI_BASE_URL', '').strip()
+    if configured_base and configured_base.rstrip('/') not in local_bases:
+        local_bases.append(configured_base)  # workstation tunnel or custom endpoint
+
+    openai_model = os.environ.get('LOCAL_AI_MODEL', model_hint).strip() or model_hint
+    ollama_model = os.environ.get('OLLAMA_MODEL', model_hint).strip() or model_hint
+
+    errors = []
+    seen = set()
+    for base in local_bases:
+        base = base.rstrip('/')
+        if not base or base in seen:
+            continue
+        seen.add(base)
+
+        try:
+            payload = {
+                "model": openai_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.0
+            }
+            res = requests.post(f'{base}/v1/chat/completions', json=payload, timeout=45)
+            res.raise_for_status()
+            data = res.json()
+            text = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+            if text and text.strip():
+                return text.strip()
+            raise RuntimeError("empty chat completion")
+        except Exception as e:
+            errors.append(f"{base}/v1/chat/completions: {e}")
+
+        if base.endswith(':11434'):
+            try:
+                payload = {
+                    "model": ollama_model,
+                    "prompt": prompt,
+                    "stream": False
+                }
+                res = requests.post(f'{base}/api/generate', json=payload, timeout=60)
+                res.raise_for_status()
+                data = res.json()
+                text = data.get('response', '')
+                if text and text.strip():
+                    return text.strip()
+                raise RuntimeError("empty ollama response")
+            except Exception as e:
+                errors.append(f"{base}/api/generate: {e}")
+
+    raise RuntimeError("Local AI unavailable: " + " | ".join(errors))
+
+
+def run_ai_with_fallback(prompt, ai_model):
+    mode = (ai_model or 'deepseek').lower().strip()
+    errors = []
+
+    def try_local():
+        return call_local_ai(prompt)
+
+    def try_gemini():
+        return call_gemini(prompt)
+
+    # For explicit "gemini"/"api" mode, try cloud API first, then server-local, then any configured remote.
+    # For all other modes (deepseek, local, fallback), prefer server-local AI first,
+    # then cloud API, then configured remote tunnel as final fallback.
+    if mode in ('gemini', 'api'):
+        engines = [('gemini', try_gemini, 'gemini'), ('local', try_local, 'local')]
+    else:
+        engines = [('local', try_local, 'local'), ('gemini', try_gemini, 'gemini')]
+
+    for label, fn, engine_id in engines:
+        try:
+            return fn(), engine_id
+        except Exception as e:
+            errors.append(f'{label}: {e}')
+
+    raise RuntimeError("All AI engines failed: " + " | ".join(errors))
+
+
 
 def init_db():
     import sqlite3
@@ -190,22 +315,33 @@ def is_invalid_year(year):
 def parse_marc_xml_to_json(xml_str):
     try:
         root = ET.fromstring(xml_str)
+        # Handle namespaced MARCXML (default namespace http://www.loc.gov/MARC21/slim)
+        ns = {'m': 'http://www.loc.gov/MARC21/slim'}
         fields = []
         for child in root:
-            if child.tag == 'leader':
-                fields.append({'tag': 'LDR', 'value': child.text})
-            elif child.tag == 'controlfield':
-                fields.append({'tag': child.attrib.get('tag', ''), 'value': child.text})
-            elif child.tag == 'datafield':
+            tag_name = child.tag
+            if tag_name.startswith('{'):
+                tag_name = tag_name.split('}', 1)[1]
+            if tag_name == 'leader':
+                fields.append({'tag': 'LDR', 'value': child.text or ''})
+            elif tag_name == 'controlfield':
+                fields.append({'tag': child.attrib.get('tag', ''), 'value': child.text or ''})
+            elif tag_name == 'datafield':
                 tag = child.attrib.get('tag', '')
-                ind1 = child.attrib.get('ind1', ' ')
-                ind2 = child.attrib.get('ind2', ' ')
+                ind1 = child.attrib.get('ind1', ' ') or ' '
+                ind2 = child.attrib.get('ind2', ' ') or ' '
                 subfields = []
-                for sf in child.findall('subfield'):
-                    subfields.append({'code': sf.attrib.get('code', ''), 'value': sf.text})
+                for sf in child.findall('m:subfield', ns) if '{' in child.tag else child.findall('subfield'):
+                    sf_tag = sf.tag
+                    if sf_tag.startswith('{'):
+                        sf_tag = sf_tag.split('}', 1)[1]
+                    if sf_tag == 'subfield':
+                        subfields.append({'code': sf.attrib.get('code', ''), 'value': sf.text or ''})
                 fields.append({'tag': tag, 'ind1': ind1, 'ind2': ind2, 'subfields': subfields})
         return fields
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return []
 
 def build_marc_xml_from_json(fields):
@@ -545,6 +681,57 @@ def update_record(biblionumber):
     return jsonify({"success": True})
 
 # --- ITEMS MANAGEMENT ---
+@app.route('/api/records/<biblionumber>/summary')
+@login_required
+def get_record_summary(biblionumber):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT b.biblionumber, b.title, b.author, bi.publishercode, bi.publicationyear,
+                       i.barcode, i.itemcallnumber, i.homebranch, i.location
+                FROM koha_mfa.biblio b
+                LEFT JOIN koha_mfa.biblioitems bi ON b.biblionumber = bi.biblionumber
+                LEFT JOIN koha_mfa.items i ON b.biblionumber = i.biblionumber
+                WHERE b.biblionumber = %s
+                LIMIT 1
+            """, (biblionumber,))
+            row = cursor.fetchone()
+            if not row:
+                return jsonify({"success": False, "error": "Not found"}), 404
+            classification = ""
+            # Pull DDC/classification from 082/092 or 942$c if available in MARC
+            cursor.execute("SELECT metadata FROM koha_mfa.biblio_metadata WHERE biblionumber = %s", (biblionumber,))
+            m_row = cursor.fetchone()
+            if m_row and m_row['metadata']:
+                fields = parse_marc_xml_to_json(m_row['metadata'])
+                for f in fields:
+                    if f.get('tag') in ('082', '092'):
+                        for sf in f.get('subfields', []):
+                            if sf.get('code') == 'a':
+                                classification = sf.get('value', '')
+                                break
+                    elif f.get('tag') == '942':
+                        for sf in f.get('subfields', []):
+                            if sf.get('code') == '2':
+                                classification = sf.get('value', '')
+                                break
+            return jsonify({
+                "success": True,
+                "biblionumber": biblionumber,
+                "title": row.get('title', ''),
+                "author": row.get('author', ''),
+                "publishercode": row.get('publishercode', ''),
+                "publicationyear": row.get('publicationyear', ''),
+                "barcode": row.get('barcode', ''),
+                "itemcallnumber": row.get('itemcallnumber', ''),
+                "homebranch": row.get('homebranch', ''),
+                "location": row.get('location', ''),
+                "classification": classification
+            })
+    finally:
+        conn.close()
+
 @app.route('/api/records/<biblionumber>/items')
 @login_required
 def get_items(biblionumber):
@@ -606,6 +793,8 @@ def modify_item(itemnumber):
             data = request.json
             barcode = data.get('barcode', '').strip()
             callnumber = data.get('itemcallnumber', '')
+            homebranch = data.get('homebranch', '')
+            location = data.get('location', '')
             
             with conn.cursor() as cursor:
                 if barcode:
@@ -615,9 +804,9 @@ def modify_item(itemnumber):
                 
                 cursor.execute("""
                     UPDATE koha_mfa.items 
-                    SET barcode = %s, itemcallnumber = %s 
+                    SET barcode = %s, itemcallnumber = %s, homebranch = %s, location = %s
                     WHERE itemnumber = %s
-                """, (barcode, callnumber, itemnumber))
+                """, (barcode, callnumber, homebranch, location, itemnumber))
                 conn.commit()
             return jsonify({"success": True})
     finally:
@@ -1012,7 +1201,7 @@ def batch_queue():
 
 # --- SOURCE EXPLORER ---
 
-SOURCE_DIR = '/var/www/koha_editor/sources'
+SOURCE_DIR = SOURCE_ROOT
 if not os.path.exists(SOURCE_DIR):
     os.makedirs(SOURCE_DIR, exist_ok=True)
 
@@ -1148,15 +1337,19 @@ def source_file_ops():
         
         if not os.path.exists(target_file) or os.path.isdir(target_file):
             return jsonify({"error": "File not found"}), 404
+        
+        # Download request must be handled before preview branches
+        if request.args.get('download') == '1':
+            return send_file(target_file, as_attachment=True)
             
         ext = target_file.lower().split('.')[-1]
         
         # Stream image types
-        if ext in ['jpg', 'jpeg', 'png', 'gif']:
+        if ext in ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']:
             return send_from_directory(os.path.dirname(target_file), os.path.basename(target_file))
         
         # Read text types
-        if ext in ['txt', 'json', 'md', 'csv']:
+        if ext in ['txt', 'json', 'md', 'csv', 'mrc']:
             try:
                 with open(target_file, 'r', encoding='utf-8') as f:
                     content = f.read()
@@ -1298,6 +1491,197 @@ def stage_koha():
         conn.commit()
         return jsonify({"success": True, "task_ids": task_ids})
     finally: conn.close()
+
+
+# --- SOURCE FILE MANAGER ---
+
+def _safe_inside_source(path):
+    abs_path = os.path.abspath(path)
+    return abs_path.startswith(os.path.abspath(SOURCE_DIR))
+
+@app.route('/api/source/delete', methods=['POST'])
+@login_required
+def source_delete():
+    data = request.json
+    paths = data.get('paths', [])
+    if not paths: return jsonify({"error": "No paths provided"}), 400
+    deleted = 0
+    errors = []
+    for p in paths:
+        target = resolve_source_path(p)
+        if not _safe_inside_source(target):
+            errors.append(f"Invalid path: {p}"); continue
+        try:
+            if os.path.isdir(target):
+                shutil.rmtree(target)
+            else:
+                os.remove(target)
+            deleted += 1
+        except Exception as e:
+            errors.append(f"{p}: {e}")
+    return jsonify({"success": len(errors) == 0, "deleted": deleted, "errors": errors})
+
+@app.route('/api/source/rename', methods=['POST'])
+@login_required
+def source_rename():
+    data = request.json
+    path = data.get('path', '')
+    new_name = data.get('new_name', '').strip()
+    if not path or not new_name: return jsonify({"error": "Path and new name required"}), 400
+    target = resolve_source_path(path)
+    if not _safe_inside_source(target): return jsonify({"error": "Invalid path"}), 400
+    new_target = os.path.join(os.path.dirname(target), new_name)
+    if not _safe_inside_source(new_target): return jsonify({"error": "Invalid new name"}), 400
+    try:
+        os.rename(target, new_target)
+        return jsonify({"success": True, "new_path": os.path.relpath(new_target, SOURCE_DIR).replace('\\', '/')})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/source/copy_move', methods=['POST'])
+@login_required
+def source_copy_move():
+    data = request.json
+    paths = data.get('paths', [])
+    destination = data.get('destination', '')
+    mode = data.get('mode', 'copy')
+    if not paths: return jsonify({"error": "No paths provided"}), 400
+    dest_dir = resolve_source_path(destination)
+    if not _safe_inside_source(dest_dir): return jsonify({"error": "Invalid destination"}), 400
+    os.makedirs(dest_dir, exist_ok=True)
+    errors = []
+    for p in paths:
+        target = resolve_source_path(p)
+        if not _safe_inside_source(target): errors.append(f"Invalid path: {p}"); continue
+        dest_path = os.path.join(dest_dir, os.path.basename(target))
+        try:
+            if mode == 'move':
+                shutil.move(target, dest_path)
+            else:
+                if os.path.isdir(target):
+                    shutil.copytree(target, dest_path, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(target, dest_path)
+        except Exception as e:
+            errors.append(f"{p}: {e}")
+    return jsonify({"success": len(errors) == 0, "errors": errors})
+
+@app.route('/api/source/zip', methods=['POST'])
+@login_required
+def source_zip():
+    data = request.json
+    paths = data.get('paths', [])
+    name = data.get('name', 'archive').strip() or 'archive'
+    base_path = data.get('base_path', '')
+    if not paths: return jsonify({"error": "No paths provided"}), 400
+    base_dir = resolve_source_path(base_path)
+    if not _safe_inside_source(base_dir): return jsonify({"error": "Invalid base path"}), 400
+    archive_name = name if name.endswith('.zip') else name + '.zip'
+    archive_path = os.path.join(base_dir, archive_name)
+    try:
+        with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for p in paths:
+                target = resolve_source_path(p)
+                if not _safe_inside_source(target): continue
+                if os.path.isdir(target):
+                    for root, dirs, files in os.walk(target):
+                        for f in files:
+                            fp = os.path.join(root, f)
+                            arcname = os.path.relpath(fp, SOURCE_DIR).replace('\\', '/')
+                            zf.write(fp, arcname)
+                else:
+                    arcname = os.path.relpath(target, SOURCE_DIR).replace('\\', '/')
+                    zf.write(target, arcname)
+        rel = os.path.relpath(archive_path, SOURCE_DIR).replace('\\', '/')
+        return jsonify({"success": True, "archive": rel})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/source/unzip', methods=['POST'])
+@login_required
+def source_unzip():
+    data = request.json
+    path = data.get('path', '')
+    destination = data.get('destination', '')
+    if not path: return jsonify({"error": "No path provided"}), 400
+    target = resolve_source_path(path)
+    if not _safe_inside_source(target) or not target.lower().endswith('.zip'):
+        return jsonify({"error": "Invalid zip file"}), 400
+    dest_dir = resolve_source_path(destination)
+    if not _safe_inside_source(dest_dir): return jsonify({"error": "Invalid destination"}), 400
+    try:
+        with zipfile.ZipFile(target, 'r') as zf:
+            zf.extractall(dest_dir)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/source/download_zip', methods=['POST'])
+@login_required
+def source_download_zip():
+    data = request.json
+    paths = data.get('paths', [])
+    if not paths: return jsonify({"error": "No paths provided"}), 400
+    tmp_name = f"download_{uuid.uuid4().hex[:12]}.zip"
+    tmp_path = os.path.join(SOURCE_DIR, tmp_name)
+    try:
+        with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for p in paths:
+                target = resolve_source_path(p)
+                if not _safe_inside_source(target): continue
+                if os.path.isdir(target):
+                    for root, dirs, files in os.walk(target):
+                        for f in files:
+                            fp = os.path.join(root, f)
+                            arcname = os.path.basename(target) + '/' + os.path.relpath(fp, target).replace('\\', '/')
+                            zf.write(fp, arcname)
+                else:
+                    zf.write(target, os.path.basename(target))
+        rel = os.path.relpath(tmp_path, SOURCE_DIR).replace('\\', '/')
+        return jsonify({"success": True, "archive": rel})
+    except Exception as e:
+        if os.path.exists(tmp_path): os.remove(tmp_path)
+        return jsonify({"error": str(e)}), 500
+
+
+# --- IMAGE TOOLS ---
+
+def _image_tool_queue(paths, tool, params=None):
+    import sqlite3
+    conn = sqlite3.connect(SQLITE_DB)
+    try:
+        task_ids = []
+        cursor = conn.cursor()
+        params_json = json.dumps(params or {})
+        for p in paths:
+            target = resolve_source_path(p)
+            if not os.path.exists(target): continue
+            task_id = f"img_{tool}_{uuid.uuid4().hex[:12]}"
+            cursor.execute(
+                "INSERT INTO ai_task_queue (task_id, type, status, images, result_data) VALUES (?, ?, ?, ?, ?)",
+                (task_id, f'image_{tool}', 'pending', target, params_json)
+            )
+            task_ids.append(task_id)
+        conn.commit()
+        return task_ids
+    finally:
+        conn.close()
+
+@app.route('/api/source/image_tool', methods=['POST'])
+@login_required
+def source_image_tool():
+    data = request.json
+    paths = data.get('paths', [])
+    tool = data.get('tool', '')
+    params = data.get('params', {})
+    if not paths or tool not in ['crop', 'optimize', 'deskew', 'colorize', 'autofix', 'rotate']:
+        return jsonify({"error": "Invalid request"}), 400
+    try:
+        task_ids = _image_tool_queue(paths, tool, params)
+        return jsonify({"success": True, "task_ids": task_ids})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 # --- END SOURCE EXPLORER ---
 
@@ -1506,7 +1890,6 @@ def ai_worker_loop():
                             raw_text = "UNKNOWN TEXT"
                             
                     import json
-                    from google import genai
                     try:
                         task_config_str = task['task_config']
                     except:
@@ -1529,51 +1912,33 @@ def ai_worker_loop():
                     else:
                         prompt = f"Extract metadata from OCR text. Output JSON with keys: title, author, publishercode, publicationyear, isbn, ddc, subjects.\nDo not output anything else.\n\nText:\n{raw_text}"
                         
-                    ai_text = ""
-                    # 1. Try Gemini if specified OR fallback to it
-                    if ai_model == 'gemini' or ai_model == 'fallback':
-                        try:
-                            api_key = config.GEMINI_API_KEY if config else os.environ.get("GEMINI_API_KEY")
-                            client = genai.Client(api_key=api_key)
-                            response = client.models.generate_content(
-                                model='gemini-2.5-flash',
-                                contents=prompt
-                            )
-                            ai_text = response.text
-                        except Exception as e:
-                            print(f"Gemini API Error: {e}")
-                            ai_text = '{"title": "Gemini API Error", "author": "Check logs"}'
-                            
-                    # 2. Local DeepSeek via Tunnel
-                    else:
-                        try:
-                            payload = {"model": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B", "messages": [{"role": "user", "content": prompt}], "temperature": 0.0}
-                            res = requests.post('http://localhost:8000/v1/chat/completions', json=payload, timeout=30)
-                            ai_text = res.json()['choices'][0]['message']['content']
-                        except Exception as e:
-                            print(f"DeepSeek Tunnel Error: {e}")
-                            # Auto Fallback to Gemini if vLLM tunnel is frozen
-                            print("Falling back to Gemini...")
+                    ai_warning = ""
+                    try:
+                        ai_text, engine_used = run_ai_with_fallback(prompt, ai_model)
+                        logging.info(f"Task {task_id} engine={engine_used} requested={ai_model}")
+
+                        ai_text = re.sub(r'<think>.*?</think>', '', ai_text, flags=re.DOTALL).strip()
+                        json_match = re.search(r'\{.*?\}', ai_text, flags=re.DOTALL)
+                        if json_match:
                             try:
-                                api_key = config.GEMINI_API_KEY if config else os.environ.get("GEMINI_API_KEY")
-                                client = genai.Client(api_key=api_key)
-                                response = client.models.generate_content(
-                                    model='gemini-2.5-flash',
-                                    contents=prompt
-                                )
-                                ai_text = response.text
+                                ai_json = json.loads(json_match.group(0))
                             except:
-                                ai_text = '{"title": "DeepSeek & Gemini Offline", "author": "Check Server"}'
-                    
-                    ai_text = re.sub(r'<think>.*?</think>', '', ai_text, flags=re.DOTALL).strip()
-                    json_match = re.search(r'\{.*?\}', ai_text, flags=re.DOTALL)
-                    if json_match:
-                        try:
-                            ai_json = json.loads(json_match.group(0))
-                        except:
-                            ai_json = {"title": "JSON Parse Error", "author": "Error"}
-                    else:
-                        ai_json = {"title": "Extraction Failed", "author": "Failed"}
+                                ai_json = {"title": "JSON Parse Error", "author": "Error"}
+                        else:
+                            ai_json = {"title": "Extraction Failed", "author": "Failed"}
+                    except Exception as engine_err:
+                        engine_used = 'heuristic'
+                        ai_warning = str(engine_err)
+                        logging.error(f"Task {task_id} AI engines unavailable, using heuristic fallback: {engine_err}")
+                        ai_json = {
+                            "title": (b_row['title'] if is_db_fix and b_row else task['title']) or "",
+                            "author": (b_row['author'] if is_db_fix and b_row else task['author']) or "",
+                            "publishercode": (b_row['publishercode'] if is_db_fix and b_row else "") or "",
+                            "publicationyear": (b_row['publicationyear'] if is_db_fix and b_row else "") or "",
+                            "isbn": "",
+                            "ddc": "",
+                            "subjects": ""
+                        }
                         
                     final_ddc = ai_json.get("ddc", "")
                     final_subjects = ai_json.get("subjects", "")
@@ -1606,6 +1971,8 @@ def ai_worker_loop():
                         "isbn": isbn_to_check,
                         "ddc": final_ddc,
                         "subjects": final_subjects,
+                        "engine": engine_used,
+                        "engine_warning": ai_warning,
                         "raw_ocr": raw_text[:500] + "..."
                     }
                         
@@ -1649,34 +2016,112 @@ def ai_worker_loop():
             
         time.sleep(3)
 
+
+def process_image_tool(input_path, tool, params=None):
+    import os, shutil, json
+    params = params or {}
+    base, ext = os.path.splitext(input_path)
+    output_path = f"{base}_{tool}{ext}"
+    try:
+        if tool == 'optimize':
+            # Use ImageMagick if available, otherwise PIL
+            try:
+                subprocess.run(['convert', input_path, '-strip', '-interlace', 'Plane', '-quality', '85', output_path], check=True, timeout=60)
+            except Exception:
+                from PIL import Image
+                img = Image.open(input_path)
+                if img.mode in ('RGBA', 'P'):
+                    img = img.convert('RGB')
+                img.save(output_path, optimize=True, quality=85)
+        elif tool == 'deskew':
+            try:
+                subprocess.run(['convert', input_path, '-deskew', '40%', output_path], check=True, timeout=60)
+            except Exception:
+                from PIL import Image
+                img = Image.open(input_path)
+                img.save(output_path)
+        elif tool == 'crop':
+            # Auto-crop white borders
+            try:
+                subprocess.run(['convert', input_path, '-trim', '+repage', output_path], check=True, timeout=60)
+            except Exception:
+                from PIL import Image
+                img = Image.open(input_path)
+                bbox = img.convert('RGB').getbbox()
+                if bbox:
+                    img.crop(bbox).save(output_path)
+                else:
+                    shutil.copy2(input_path, output_path)
+        elif tool == 'rotate':
+            angle = float(params.get('angle', 90))
+            try:
+                subprocess.run(['convert', input_path, '-rotate', str(angle), output_path], check=True, timeout=60)
+            except Exception:
+                from PIL import Image
+                img = Image.open(input_path).convert('RGB')
+                # PIL rotates counter-clockwise for positive angles; use -angle to match ImageMagick/clockwise
+                img = img.rotate(-angle, expand=True, fillcolor=(255, 255, 255))
+                img.save(output_path)
+        elif tool == 'colorize':
+            try:
+                subprocess.run(['convert', input_path, '-modulate', '110,150', '-contrast-stretch', '2%x2%', output_path], check=True, timeout=60)
+            except Exception:
+                from PIL import Image, ImageEnhance
+                img = Image.open(input_path).convert('RGB')
+                enhancer = ImageEnhance.Color(img)
+                img = enhancer.enhance(1.5)
+                img.save(output_path)
+        elif tool == 'autofix':
+            try:
+                subprocess.run(['convert', input_path, '-auto-gamma', '-contrast-stretch', '2%x2%', '-sharpen', '0x1', output_path], check=True, timeout=60)
+            except Exception:
+                from PIL import Image, ImageEnhance, ImageFilter
+                img = Image.open(input_path).convert('RGB')
+                img = ImageEnhance.Contrast(img).enhance(1.2)
+                img = ImageEnhance.Sharpness(img).enhance(1.2)
+                img.save(output_path)
+        else:
+            shutil.copy2(input_path, output_path)
+        return {"success": True, "output": os.path.relpath(output_path, SOURCE_DIR).replace('\\', '/')}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 # Start the worker daemon
 import threading
 
 def source_worker_loop():
     import json, base64, requests, os, uuid, time
-    from google import genai
-    
+
     while True:
         try:
             sq_conn = sqlite3.connect(SQLITE_DB)
             sq_conn.row_factory = sqlite3.Row
             sq_c = sq_conn.cursor()
-            sq_c.execute("SELECT * FROM ai_task_queue WHERE type IN ('source_ocr', 'source_meta', 'source_mrc', 'source_stage') AND status = 'pending' LIMIT 1")
+            sq_c.execute("SELECT * FROM ai_task_queue WHERE type IN ('source_ocr', 'source_meta', 'source_mrc', 'source_stage', 'image_crop', 'image_optimize', 'image_deskew', 'image_colorize', 'image_autofix', 'image_rotate') AND status = 'pending' LIMIT 1")
             task = sq_c.fetchone()
-            
+
             if task:
                 task_id = task['task_id']
                 t_type = task['type']
                 target_file = task['images']
-                
+
                 sq_c.execute("UPDATE ai_task_queue SET status = 'processing' WHERE task_id = ?", (task_id,))
                 sq_conn.commit()
                 sq_conn.close()
-                
+
                 try:
                     result_data = {"status": "success", "file": target_file}
-                    
-                    if t_type == 'source_ocr':
+
+                    if t_type.startswith('image_'):
+                        tool = t_type.replace('image_', '')
+                        params = {}
+                        try:
+                            params = json.loads(task['result_data'] or '{}')
+                        except Exception:
+                            params = {}
+                        result_data = process_image_tool(target_file, tool, params)
+                    elif t_type == 'source_ocr':
                         with open(target_file, 'rb') as f:
                             encoded_string = base64.b64encode(f.read()).decode('utf-8')
                         ocr_payload = {'apikey': 'helloworld', 'base64Image': 'data:image/jpeg;base64,' + encoded_string, 'language': 'eng'}
@@ -1700,25 +2145,20 @@ def source_worker_loop():
                             text_content = f.read()
                             
                         prompt = f"Extract metadata from OCR text. Output JSON with keys: title, author, publishercode, publicationyear, isbn, ddc, subjects, pages.\nDo not output anything else.\n\nText:\n{text_content}"
-                        
+
                         try:
-                            api_key = config.GEMINI_API_KEY if 'config' in globals() else os.environ.get("GEMINI_API_KEY")
-                            client = genai.Client(api_key=api_key)
-                            response = client.models.generate_content(
-                                model='gemini-2.5-flash',
-                                contents=prompt
-                            )
-                            ai_text = response.text
-                            # clean markdown
+                            ai_text, engine_used = run_ai_with_fallback(prompt, 'fallback')
                             ai_text = ai_text.replace("```json", "").replace("```", "").strip()
-                            json.loads(ai_text) # validate
+                            json.loads(ai_text)
                         except Exception as e:
                             ai_text = json.dumps({"title": "AI Error", "error": str(e)})
+                            engine_used = 'none'
                             
                         meta_file = target_file.replace('.ocr.txt', '') + ".meta.json"
                         with open(meta_file, 'w', encoding='utf-8') as f:
                             f.write(ai_text)
                         result_data['meta_file'] = meta_file
+                        result_data['engine'] = engine_used
                         
                     elif t_type == 'source_mrc':
                         import pymarc

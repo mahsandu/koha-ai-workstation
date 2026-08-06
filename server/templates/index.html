@@ -207,6 +207,64 @@
             }
         }
 
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 2000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background: rgba(0,0,0,0.5);
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-content {
+            background: white;
+            margin: auto;
+            padding: 25px;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 500px;
+            position: relative;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+        }
+        .close {
+            position: absolute;
+            top: 10px;
+            right: 15px;
+            font-size: 1.5rem;
+            cursor: pointer;
+            color: #6b7280;
+        }
+        .close:hover { color: #111; }
+
+        /* Sources toolbar */
+        .sources-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            background: var(--card-bg);
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+        .sources-toolbar .toolbar-label {
+            font-weight: 700;
+            margin-right: 4px;
+            color: var(--text-light);
+            font-size: 0.9rem;
+        }
+        .sources-toolbar .toolbar-divider {
+            width: 1px;
+            height: 24px;
+            background: var(--border-color);
+            margin: 0 4px;
+        }
+
     </style>
 </head>
 <body>
@@ -383,6 +441,9 @@
                     Selected: <span id="batch-count" style="color:var(--primary);">0</span> records
                 </div>
                 <div style="display:flex; gap:10px; align-items:center;">
+                    <button class="btn btn-small" onclick="selectAllVisibleRows()" title="Select all records on this page">Select All Visible</button>
+                    <button class="btn btn-outline btn-small" onclick="toggleSelectAll(false)">Clear Selection</button>
+
                     <label style="font-weight:bold; font-size:0.9rem;">Fix Strategy:</label>
                     <select id="batch-fix-type" style="padding:8px; border-radius:4px; border:1px solid #ccc;">
                         <option value="auto">Auto Fix (Recommended)</option>
@@ -391,8 +452,10 @@
                     
                     <label style="font-weight:bold; font-size:0.9rem;">AI Engine:</label>
                     <select id="batch-ai-model" style="padding:8px; border-radius:4px; border:1px solid #ccc;">
-                        <option value="fallback">Gemini (Cloud) - Fast/Stable</option>
-                        <option value="deepseek">DeepSeek (Local WSL) - Slow/Unstable</option>
+                        <option value="auto">Auto (Server Local → Gemini)</option>
+                        <option value="local">Server Local AI</option>
+                        <option value="gemini">Gemini (Cloud)</option>
+                        <option value="deepseek">Workstation Tunnel (Legacy)</option>
                     </select>
 
                     <button class="btn" style="background:var(--primary);" onclick="submitBatchFix()">Fix Selected Items</button>
@@ -462,10 +525,10 @@
         </div>
         
         <!-- SOURCES TAB -->
-        <div id="tab-sources" class="tab-content" style="display:none; height:calc(100vh - 150px);">
+        <div id="tab-sources" class="tab-content" style="height:calc(100vh - 150px);">
             <div style="display: flex; height: 100%; gap: 15px;">
                 <!-- Left Pane: File Browser -->
-                <div style="flex: 1; background: var(--bg-card); padding: 15px; border-radius: 8px; border: 1px solid var(--border-color); overflow-y: auto; display: flex; flex-direction: column;">
+                <div style="flex: 0 0 340px; background: var(--bg-card); padding: 15px; border-radius: 8px; border: 1px solid var(--border-color); overflow-y: auto; display: flex; flex-direction: column;">
                     <div style="display: flex; justify-content: space-between; margin-bottom: 15px; align-items:center;">
                         <h2 style="margin: 0; font-size: 1.2rem;">File Browser</h2>
                         <div style="display:flex; gap:5px;">
@@ -485,24 +548,45 @@
                     </div>
                 </div>
 
-                <!-- Middle Pane: Preview/Editor -->
-                <div style="flex: 2; background: var(--bg-card); padding: 15px; border-radius: 8px; border: 1px solid var(--border-color); display: flex; flex-direction: column;">
-                    <h2 style="margin-top: 0; font-size: 1.2rem; margin-bottom: 15px;" id="source-preview-title">Preview</h2>
-                    <div id="source-preview-container" style="flex: 1; overflow-y: auto; background: #fff; border-radius: 4px; border: 1px solid var(--border-color); padding: 10px; display: flex; justify-content: center; align-items: flex-start;">
-                        <p style="color: #6b7280; margin-top: 20px;">Select a file to preview</p>
+                <!-- Right Pane: Toolbars + Preview -->
+                <div style="flex: 1; display: flex; flex-direction: column; gap: 10px; min-width: 0;">
+                    <!-- Top Toolbar: File + Image Tools -->
+                    <div class="sources-toolbar">
+                        <span class="toolbar-label">File:</span>
+                        <button class="btn btn-outline btn-small" onclick="actionDownload()">⬇ Download</button>
+                        <button class="btn btn-outline btn-small" onclick="actionCopyMove('copy')">📋 Copy</button>
+                        <button class="btn btn-outline btn-small" onclick="actionCopyMove('move')">✂ Move</button>
+                        <button class="btn btn-outline btn-small" onclick="actionRename()">✏ Rename</button>
+                        <button class="btn btn-outline btn-small btn-danger" onclick="actionDelete()">🗑 Delete</button>
+                        <button class="btn btn-outline btn-small" onclick="actionZip()">🗜 Zip</button>
+                        <button class="btn btn-outline btn-small" onclick="actionUnzip()">📂 Unzip</button>
+                        <div class="toolbar-divider"></div>
+                        <span class="toolbar-label">Image:</span>
+                        <button class="btn btn-outline btn-small" onclick="actionImageTool('crop')">🖼 Crop</button>
+                        <button class="btn btn-outline btn-small" onclick="actionImageTool('optimize')">✨ Optimize</button>
+                        <button class="btn btn-outline btn-small" onclick="actionImageTool('deskew')">📐 De-skew</button>
+                        <button class="btn btn-outline btn-small" onclick="actionRotatePrompt()">🔄 Rotate</button>
+                        <button class="btn btn-outline btn-small" onclick="actionImageTool('colorize')">🎨 Colorize</button>
+                        <button class="btn btn-outline btn-small" onclick="actionImageTool('autofix')">🔧 Auto Fix</button>
+                        <button class="btn btn-small" onclick="saveSourceFile()" id="btn-save-source" style="display:none; margin-left:auto;">Save File Changes</button>
                     </div>
-                </div>
 
-                <!-- Right Pane: Actions -->
-                <div style="width: 250px; background: var(--bg-card); padding: 15px; border-radius: 8px; border: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 10px;">
-                    <h2 style="margin-top: 0; font-size: 1.2rem;">Actions</h2>
-                    <button class="btn" onclick="saveSourceFile()" id="btn-save-source" style="display:none; background:var(--primary);">Save File Changes</button>
-                    <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 10px 0; width: 100%;">
-                    <p style="font-size: 0.85rem; color: #6b7280; margin-top:0; font-weight:bold;">Bulk Actions (Applies to selected)</p>
-                    <button class="btn btn-outline" onclick="actionProcessOcr()">1. Run OCR (Images)</button>
-                    <button class="btn btn-outline" onclick="actionProcessMeta()">2. Extract Meta (TXT)</button>
-                    <button class="btn btn-outline" onclick="actionGenerateMrc()">3. Generate MRC (JSON)</button>
-                    <button class="btn btn-outline" onclick="actionStageKoha()">4. Stage to Koha (MRC)</button>
+                    <!-- Preview Pane -->
+                    <div style="flex: 1; background: var(--bg-card); padding: 15px; border-radius: 8px; border: 1px solid var(--border-color); display: flex; flex-direction: column; min-height: 0;">
+                        <h2 style="margin-top: 0; font-size: 1.2rem; margin-bottom: 15px;" id="source-preview-title">Preview</h2>
+                        <div id="source-preview-container" style="flex: 1; overflow-y: auto; background: #fff; border-radius: 4px; border: 1px solid var(--border-color); padding: 10px; display: flex; justify-content: center; align-items: flex-start; min-height: 0;">
+                            <p style="color: #6b7280; margin-top: 20px;">Select a file to preview</p>
+                        </div>
+                    </div>
+
+                    <!-- Bottom Toolbar: Catalog Pipeline -->
+                    <div class="sources-toolbar">
+                        <span class="toolbar-label">Catalog Pipeline:</span>
+                        <button class="btn btn-outline btn-small" onclick="actionProcessOcr()">1. Run OCR</button>
+                        <button class="btn btn-outline btn-small" onclick="actionProcessMeta()">2. Extract Meta</button>
+                        <button class="btn btn-outline btn-small" onclick="actionGenerateMrc()">3. Generate MRC</button>
+                        <button class="btn btn-outline btn-small" onclick="actionStageKoha()">4. Stage to Koha</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -650,9 +734,22 @@
             </div>
         </div>
         
-        <!-- Log Modal -->
-        <div id="log-modal" class="modal">
+        <!-- Generic App Modal -->
+        <div id="app-modal" class="modal" style="display:none;">
             <div class="modal-content">
+                <span class="close" onclick="closeAppModal()">&times;</span>
+                <h3 id="app-modal-title">Title</h3>
+                <div id="app-modal-body" style="margin: 15px 0;"></div>
+                <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:15px;">
+                    <button class="btn btn-outline btn-small" id="app-modal-cancel" onclick="closeAppModal()">Cancel</button>
+                    <button class="btn btn-small" id="app-modal-confirm">OK</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Log Modal -->
+        <div id="log-modal" class="modal" style="display:none;">
+            <div class="modal-content" style="max-width: 800px;">
                 <span class="close" onclick="closeLogModal()">&times;</span>
                 <h3>AI Result / Logs</h3>
                 <pre id="log-json" style="background: #1e293b; color: #e2e8f0; padding: 15px; border-radius: 8px; overflow-x: auto; font-family: monospace; font-size: 13px;"></pre>
@@ -663,7 +760,7 @@
 
     <script>
         // --- NAVIGATION & URL STATE ---
-        function switchTab(tab, pushState = true) {
+        function switchTab(tab, pushState = true, hashOverride = null) {
             document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             
@@ -674,12 +771,16 @@
             
             if(pushState) {
                 const url = new URL(window.location);
-                url.hash = tab;
+                url.hash = hashOverride || tab;
                 window.history.pushState({}, '', url);
             }
             
             if(tab === 'browser' && document.getElementById('records-body').innerHTML.includes('Loading')) {
                 loadStats(); loadRecords();
+            }
+            if(tab === 'browser') {
+                // Auto-select all visible records and default engine to Auto for quick batch action
+                setTimeout(autoSelectBatchDefaults, 600);
             }
             if(tab === 'queue') fetchQueueStatus();
             if(tab === 'dashboard') loadDashboardStats();
@@ -698,7 +799,12 @@
             let biblioIdToLoad = null;
             let taskIdToLoad = null;
             
-            if(tab.startsWith('editor#biblio=')) {
+            // Preferred format: #editor/<biblionumber>
+            if(tab.startsWith('editor/')) {
+                biblioIdToLoad = tab.split('/')[1];
+                tab = 'editor';
+            // Legacy format: #editor#biblio=<biblionumber>
+            } else if(tab.startsWith('editor#biblio=')) {
                 biblioIdToLoad = tab.split('=')[1];
                 tab = 'editor';
             } else if(tab.startsWith('queue#task=')) {
@@ -783,6 +889,51 @@
         // --- SOURCE EXPLORER ---
         let currentSourcePath = "";
         let currentPreviewFile = null;
+
+        // --- GENERIC MODAL HELPERS (replaces prompt/confirm which are blocked) ---
+        let appModalConfirmCallback = null;
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function openAppModal(title, bodyHtml, onConfirm, confirmText='OK', showCancel=true) {
+            document.getElementById('app-modal-title').textContent = title;
+            document.getElementById('app-modal-body').innerHTML = bodyHtml;
+            const confirmBtn = document.getElementById('app-modal-confirm');
+            confirmBtn.textContent = confirmText;
+            appModalConfirmCallback = onConfirm;
+            confirmBtn.onclick = () => {
+                if(appModalConfirmCallback) appModalConfirmCallback();
+                closeAppModal();
+            };
+            document.getElementById('app-modal-cancel').style.display = showCancel ? 'inline-block' : 'none';
+            const modal = document.getElementById('app-modal');
+            modal.style.display = 'flex';
+        }
+
+        function closeAppModal() {
+            document.getElementById('app-modal').style.display = 'none';
+            appModalConfirmCallback = null;
+        }
+
+        function showPrompt(title, defaultValue, onOk) {
+            openAppModal(title,
+                `<input type="text" id="app-modal-input" style="width:100%; padding:8px;" value="${escapeHtml(defaultValue || '')}">`,
+                () => { if(onOk) onOk(document.getElementById('app-modal-input').value); },
+                'OK', true);
+            setTimeout(() => { const el = document.getElementById('app-modal-input'); if(el) el.focus(); }, 50);
+        }
+
+        function showConfirm(message, onYes) {
+            openAppModal('Confirm', `<p>${escapeHtml(message)}</p>`, () => { if(onYes) onYes(); }, 'Yes', true);
+        }
+
+        function showAlert(message) {
+            openAppModal('Notice', `<p>${escapeHtml(message)}</p>`, () => {}, 'OK', false);
+        }
 
         
         async function loadSourceFolder(path = "") {
@@ -874,17 +1025,18 @@
         }
         
         async function createSourceFolder() {
-            const name = prompt("Enter folder name:");
-            if(!name) return;
-            try {
-                const res = await fetch('/koha_editor/api/source/mkdir', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({path: currentSourcePath, name: name})
-                });
-                await res.json();
-                loadSourceFolder(currentSourcePath);
-            } catch(e) { alert(e); }
+            showPrompt("Enter folder name:", "", async (name) => {
+                if(!name) return;
+                try {
+                    const res = await fetch('/koha_editor/api/source/mkdir', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({path: currentSourcePath, name: name})
+                    });
+                    await res.json();
+                    loadSourceFolder(currentSourcePath);
+                } catch(e) { showAlert(String(e)); }
+            });
         }
         
         async function uploadSourceFiles(files) {
@@ -907,13 +1059,19 @@
         function getSelectedSourceFiles() {
             return Array.from(document.querySelectorAll('.source-cb:checked')).map(cb => cb.value);
         }
+
+        function requireSelection(minCount, message) {
+            const paths = getSelectedSourceFiles();
+            if(paths.length < minCount) {
+                showAlert(message || `Please select at least ${minCount} item(s).`);
+                return null;
+            }
+            return paths;
+        }
         
         async function runSourceAction(endpoint) {
-            const paths = getSelectedSourceFiles();
-            if(paths.length === 0) {
-                alert("Please select files first using the checkboxes.");
-                return;
-            }
+            const paths = requireSelection(1, "Please select files first using the checkboxes.");
+            if(!paths) return;
             try {
                 const res = await fetch(endpoint, {
                     method: 'POST',
@@ -922,14 +1080,13 @@
                 });
                 const data = await res.json();
                 if(data.success) {
-                    alert(`Action queued! Task IDs: ${data.task_ids.join(', ')}\nCheck the Queue Monitor for progress.`);
-                    // Refresh current folder after a small delay
+                    showAlert(`Action queued! Task IDs: ${data.task_ids.join(', ')}\nCheck the Queue Monitor for progress.`);
                     setTimeout(() => loadSourceFolder(currentSourcePath), 2000);
                 } else {
-                    alert("Error: " + data.error);
+                    showAlert("Error: " + data.error);
                 }
             } catch(e) {
-                alert("Request failed: " + e);
+                showAlert("Request failed: " + e);
             }
         }
         
@@ -937,7 +1094,126 @@
         function actionProcessMeta() { runSourceAction('/koha_editor/api/source/process_ai'); }
         function actionGenerateMrc() { runSourceAction('/koha_editor/api/source/generate_mrc'); }
         function actionStageKoha() { runSourceAction('/koha_editor/api/source/stage_koha'); }
-        
+
+        async function actionDownload() {
+            const paths = requireSelection(1, "Select files to download.");
+            if(!paths) return;
+            if(paths.length === 1) {
+                window.open(`/koha_editor/api/source/file?path=${encodeURIComponent(paths[0])}&download=1`, '_blank');
+            } else {
+                const res = await fetch('/koha_editor/api/source/download_zip', {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({paths: paths})
+                });
+                const data = await res.json();
+                if(data.success && data.archive) {
+                    window.open(`/koha_editor/api/source/file?path=${encodeURIComponent(data.archive)}&download=1`, '_blank');
+                } else { showAlert("Error: " + (data.error || "Download failed")); }
+            }
+        }
+
+        async function actionCopyMove(mode) {
+            const paths = requireSelection(1, "Select files/folders first.");
+            if(!paths) return;
+            showPrompt(`Enter destination folder path for ${mode}:`, currentSourcePath, async (dest) => {
+                if(!dest) return;
+                const res = await fetch('/koha_editor/api/source/copy_move', {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({paths: paths, destination: dest, mode: mode})
+                });
+                const data = await res.json();
+                showAlert(data.success ? `${mode} completed.` : "Error: " + data.error);
+                loadSourceFolder(currentSourcePath);
+            });
+        }
+
+        async function actionRename() {
+            const paths = requireSelection(1, "Select one file/folder to rename.");
+            if(!paths || paths.length !== 1) { showAlert("Select exactly one file/folder to rename."); return; }
+            showPrompt("Enter new name:", paths[0].split('/').pop(), async (newName) => {
+                if(!newName) return;
+                const res = await fetch('/koha_editor/api/source/rename', {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({path: paths[0], new_name: newName})
+                });
+                const data = await res.json();
+                showAlert(data.success ? "Renamed." : "Error: " + data.error);
+                loadSourceFolder(currentSourcePath);
+            });
+        }
+
+        async function actionDelete() {
+            const paths = requireSelection(1, "Select files/folders to delete.");
+            if(!paths) return;
+            showConfirm(`Delete ${paths.length} selected item(s)? This cannot be undone.`, async () => {
+                const res = await fetch('/koha_editor/api/source/delete', {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({paths: paths})
+                });
+                const data = await res.json();
+                showAlert(data.success ? "Deleted." : "Error: " + data.error);
+                loadSourceFolder(currentSourcePath);
+            });
+        }
+
+        async function actionZip() {
+            const paths = requireSelection(1, "Select files/folders to zip.");
+            if(!paths) return;
+            showPrompt("Archive name (without extension):", "archive", async (name) => {
+                if(!name) return;
+                const res = await fetch('/koha_editor/api/source/zip', {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({paths: paths, name: name, base_path: currentSourcePath})
+                });
+                const data = await res.json();
+                showAlert(data.success ? `Created ${data.archive}` : "Error: " + data.error);
+                loadSourceFolder(currentSourcePath);
+            });
+        }
+
+        async function actionUnzip() {
+            const paths = requireSelection(1, "Select a zip file to unzip.");
+            if(!paths || paths.length !== 1 || !paths[0].toLowerCase().endsWith('.zip')) {
+                showAlert("Select exactly one zip file."); return;
+            }
+            const res = await fetch('/koha_editor/api/source/unzip', {
+                method: 'POST', headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({path: paths[0], destination: currentSourcePath})
+            });
+            const data = await res.json();
+            showAlert(data.success ? "Extracted." : "Error: " + data.error);
+            loadSourceFolder(currentSourcePath);
+        }
+
+        async function actionImageTool(tool, params) {
+            const paths = getSelectedSourceFiles().filter(p => /\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(p));
+            if(paths.length === 0) { showAlert("Select image files only."); return; }
+            const body = {paths: paths, tool: tool};
+            if(params) body.params = params;
+            const res = await fetch('/koha_editor/api/source/image_tool', {
+                method: 'POST', headers: {'Content-Type':'application/json'},
+                body: JSON.stringify(body)
+            });
+            const data = await res.json();
+            if(data.success) {
+                showAlert(`Image ${tool} queued. Task IDs: ${(data.task_ids || []).join(', ')}`);
+                setTimeout(() => loadSourceFolder(currentSourcePath), 2000);
+            } else { showAlert("Error: " + data.error); }
+        }
+
+        function actionRotatePrompt() {
+            const paths = getSelectedSourceFiles().filter(p => /\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(p));
+            if(paths.length === 0) { showAlert("Select image files to rotate."); return; }
+            openAppModal('Rotate Images',
+                `<p>Enter rotation angle (degrees). Positive values rotate clockwise.</p>
+                 <input type="number" id="rotate-angle" style="width:100%; padding:8px;" value="90" step="1">`,
+                () => {
+                    const angle = parseFloat(document.getElementById('rotate-angle').value) || 0;
+                    actionImageTool('rotate', {angle: angle});
+                }, 'Rotate', true);
+            setTimeout(() => { const el = document.getElementById('rotate-angle'); if(el) el.focus(); }, 50);
+        }
+
                 // --- QUEUE MONITOR ---
         let queueInterval = null;
         let zebraInterval = null;
@@ -1060,10 +1336,11 @@
             
             // Update stats cards directly
             fetch('/koha_editor/api/stats').then(r => r.json()).then(s => {
-                document.getElementById('q-stat-pending').textContent = s.q_stats.pending || 0;
-                document.getElementById('q-stat-processing').textContent = s.q_stats.processing || 0;
-                document.getElementById('q-stat-completed').textContent = s.q_stats.completed || 0;
-                document.getElementById('q-stat-error').textContent = s.q_stats.error || 0;
+                const qs = s.q_stats || {};
+                document.getElementById('q-stat-pending').textContent = qs.pending || 0;
+                document.getElementById('q-stat-processing').textContent = qs.processing || 0;
+                document.getElementById('q-stat-completed').textContent = qs.completed || 0;
+                document.getElementById('q-stat-error').textContent = qs.error || 0;
             });
             
             document.getElementById('q-page-info').textContent = `Page ${data.page} / Total: ${data.total}`;
@@ -1152,6 +1429,18 @@
             document.querySelectorAll('.row-checkbox').forEach(cb => cb.checked = checked);
             updateSelectionCount();
         }
+
+        function selectAllVisibleRows() {
+            toggleSelectAll(true);
+            if(document.getElementById('selectAllCheckbox')) document.getElementById('selectAllCheckbox').checked = true;
+        }
+
+        function autoSelectBatchDefaults() {
+            // Auto-select all visible records and set engine/strategy defaults
+            selectAllVisibleRows();
+            document.getElementById('batch-fix-type').value = 'auto';
+            document.getElementById('batch-ai-model').value = 'auto';
+        }
         
         function updateSelectionCount() {
             const selected = document.querySelectorAll('.row-checkbox:checked').length;
@@ -1219,7 +1508,7 @@ async function submitBatchFix() {
             cachedRecords = data.data; document.getElementById('page-info').textContent = `Page ${data.page}`;
             const tbody = document.getElementById('records-body');
             if(data.data.length === 0) { tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;">No records found.</td></tr>`; return; }
-            tbody.innerHTML = data.data.map((r, i) => `<tr><td style="text-align: center;"><input type="checkbox" class="row-checkbox" value="${r.biblionumber}" onchange="updateSelectionCount()"></td><td><a href="#editor#biblio=${r.biblionumber}" style="color:var(--primary); text-decoration:none; font-weight:bold;">${r.biblionumber}</a></td><td><a href="#editor#biblio=${r.biblionumber}" style="color:var(--primary); text-decoration:none; font-weight:bold;">${r.barcode || 'N/A'}</a></td><td>${r.title}</td><td>${r.author}</td><td>${r.publishercode}</td><td>${r.publicationyear}</td><td>${r.pages}</td><td style="color:#dc2626; font-size:0.8rem; font-weight:600;">${r.issues}</td><td><button class="btn btn-small" onclick="openFullEditor(${i})">Full Edit</button></td></tr>`).join('');
+            tbody.innerHTML = data.data.map((r, i) => `<tr><td style="text-align: center;"><input type="checkbox" class="row-checkbox" value="${r.biblionumber}" onchange="updateSelectionCount()"></td><td><a href="#editor/${r.biblionumber}" style="color:var(--primary); text-decoration:none; font-weight:bold;">${r.biblionumber}</a></td><td><a href="#editor/${r.biblionumber}" style="color:var(--primary); text-decoration:none; font-weight:bold;">${r.barcode || 'N/A'}</a></td><td>${r.title}</td><td>${r.author}</td><td>${r.publishercode}</td><td>${r.publicationyear}</td><td>${r.pages}</td><td style="color:#dc2626; font-size:0.8rem; font-weight:600;">${r.issues}</td><td><button class="btn btn-small" onclick="openFullEditor(${i})">Full Edit</button></td></tr>`).join('');
         }
         function prevPage() { if(currentPage > 1) { currentPage--; loadRecords(); } }
         function nextPage() { currentPage++; loadRecords(); }
@@ -1238,7 +1527,8 @@ async function submitBatchFix() {
         async function openFullEditor(index) {
             currentBiblioIndex = index; const biblio = cachedRecords[index];
             document.getElementById('editor-title').textContent = `Editing Biblio #${biblio.biblionumber} (Barcode: ${biblio.barcode})`;
-            document.getElementById('marc-editor-fields').innerHTML = "Loading MARC XML..."; switchTab('editor');
+            document.getElementById('marc-editor-fields').innerHTML = "Loading MARC XML...";
+            switchTab('editor', true, `editor/${biblio.biblionumber}`);
             const res = await fetch(`/koha_editor/api/records/${biblio.biblionumber}/raw`); const data = await res.json();
             currentMarcFields = data.fields || []; renderMarcEditor();
             loadItems(biblio.biblionumber);
@@ -1248,6 +1538,9 @@ async function submitBatchFix() {
             document.getElementById('editor-title').textContent = `Editing Biblio #${biblionumber} (Loading...)`;
             document.getElementById('marc-editor-fields').innerHTML = "Loading MARC XML..."; 
             switchTab('editor', false);
+            const url = new URL(window.location);
+            url.hash = `editor/${biblionumber}`;
+            window.history.replaceState({}, '', url);
             const res = await fetch(`/koha_editor/api/records/${biblionumber}/raw`); 
             const data = await res.json();
             if(!data.fields) {
@@ -1260,6 +1553,17 @@ async function submitBatchFix() {
             document.getElementById('editor-title').textContent = `Editing Biblio #${biblionumber}`;
             renderMarcEditor();
             loadItems(biblionumber);
+            // Fetch summary info (barcode, classification, etc.) for the title header
+            fetch(`/koha_editor/api/records/${biblionumber}/summary`).then(r => r.json()).then(summary => {
+                if(summary.success) {
+                    const titleEl = document.getElementById('editor-title');
+                    const parts = [`Biblio #${biblionumber}`];
+                    if(summary.barcode) parts.push(`Barcode: ${summary.barcode}`);
+                    if(summary.itemcallnumber) parts.push(`Call No: ${summary.itemcallnumber}`);
+                    if(summary.classification) parts.push(`Class: ${summary.classification}`);
+                    titleEl.textContent = 'Editing ' + parts.join(' | ');
+                }
+            });
         }
         
         async function aiFixCurrentEditor() {
@@ -1278,13 +1582,22 @@ async function submitBatchFix() {
         }
         function loadNextRecord(offset) { const nextIdx = currentBiblioIndex + offset; if(nextIdx >= 0 && nextIdx < cachedRecords.length) openFullEditor(nextIdx); else alert("End of list!"); }
         
+        function isInternalNoteField(field) {
+            if(field.tag !== '500' || !field.subfields) return false;
+            const val = field.subfields.map(sf => sf.value).join(' ').trim();
+            return val === "Imported from combined root JSON data" || val.startsWith('__internal:');
+        }
+
         function renderMarcEditor() {
             const container = document.getElementById('marc-editor-fields'); container.innerHTML = '';
             currentMarcFields.forEach((field, fIdx) => {
                 const isControl = field.tag === 'LDR' || (parseInt(field.tag) < 10);
-                let subfieldsHtml = isControl ? `<input type="text" class="marc-sub-value" value="${field.value || ''}" onchange="updateMarcValue(${fIdx}, null, this.value)">` : (field.subfields || []).map((sf, sIdx) => `<div class="marc-subfield"><span style="color:var(--primary); font-weight:bold;">$</span><input type="text" class="marc-sub-code" value="${sf.code}" onchange="updateMarcCode(${fIdx}, ${sIdx}, this.value)" maxlength="1"><input type="text" class="marc-sub-value" value="${sf.value.replace(/"/g, '&quot;')}" onchange="updateMarcValue(${fIdx}, ${sIdx}, this.value)"><button class="remove-btn" onclick="removeSubfield(${fIdx}, ${sIdx})">×</button></div>`).join('') + `<button class="btn btn-outline btn-small" style="align-self:flex-start; margin-top:5px;" onclick="addSubfield(${fIdx})">+ Subfield</button>`;
-                const div = document.createElement('div'); div.className = 'marc-field';
-                div.innerHTML = `<div style="display:flex; flex-direction:column; gap:5px;"><button class="remove-btn" onclick="removeField(${fIdx})">×</button><button class="btn btn-outline btn-small" style="padding:2px; font-size:0.75rem;" onclick="duplicateField(${fIdx})">Copy</button></div><div style="display:flex; flex-direction:column; align-items:center; width: 100px;"><input type="text" class="marc-tag" value="${field.tag}" onchange="updateMarcTag(${fIdx}, this.value)" style="width: 100%; box-sizing:border-box;"><span style="font-size:0.75rem; color:var(--text-light); text-align:center; margin-top:3px; font-weight:600;">${marcLabels[field.tag] || 'Custom Field'}</span></div>${!isControl ? `<input type="text" class="marc-ind" value="${field.ind1}" onchange="updateMarcInd(${fIdx}, 1, this.value)" maxlength="1"><input type="text" class="marc-ind" value="${field.ind2}" onchange="updateMarcInd(${fIdx}, 2, this.value)" maxlength="1">` : ''}<div class="marc-subfields">${subfieldsHtml}</div>`;
+                const isInternal = isInternalNoteField(field);
+                let subfieldsHtml = isControl ? `<input type="text" class="marc-sub-value" value="${field.value || ''}" onchange="updateMarcValue(${fIdx}, null, this.value)">` : (field.subfields || []).map((sf, sIdx) => `<div class="marc-subfield" ${isInternal ? 'style="opacity:0.7;"' : ''}><span style="color:var(--primary); font-weight:bold;">$</span><input type="text" class="marc-sub-code" value="${sf.code}" onchange="updateMarcCode(${fIdx}, ${sIdx}, this.value)" maxlength="1"><input type="text" class="marc-sub-value" value="${sf.value.replace(/"/g, '&quot;')}" onchange="updateMarcValue(${fIdx}, ${sIdx}, this.value)"><button class="remove-btn" onclick="removeSubfield(${fIdx}, ${sIdx})">×</button></div>`).join('') + `<button class="btn btn-outline btn-small" style="align-self:flex-start; margin-top:5px;" onclick="addSubfield(${fIdx})">+ Subfield</button>`;
+                const div = document.createElement('div');
+                div.className = 'marc-field';
+                if(isInternal) div.style.background = '#f3f4f6';
+                div.innerHTML = `<div style="display:flex; flex-direction:column; gap:5px;"><button class="remove-btn" onclick="removeField(${fIdx})">×</button><button class="btn btn-outline btn-small" style="padding:2px; font-size:0.75rem;" onclick="duplicateField(${fIdx})">Copy</button></div><div style="display:flex; flex-direction:column; align-items:center; width: 100px;"><input type="text" class="marc-tag" value="${field.tag}" onchange="updateMarcTag(${fIdx}, this.value)" style="width: 100%; box-sizing:border-box;${isInternal ? 'color:#6b7280;' : ''}"><span style="font-size:0.75rem; color:var(--text-light); text-align:center; margin-top:3px; font-weight:600;">${isInternal ? 'Internal Note' : (marcLabels[field.tag] || 'Custom Field')}</span></div>${!isControl ? `<input type="text" class="marc-ind" value="${field.ind1}" onchange="updateMarcInd(${fIdx}, 1, this.value)" maxlength="1"><input type="text" class="marc-ind" value="${field.ind2}" onchange="updateMarcInd(${fIdx}, 2, this.value)" maxlength="1">` : ''}<div class="marc-subfields">${subfieldsHtml}</div>`;
                 container.appendChild(div);
             });
         }
@@ -1336,13 +1649,33 @@ async function submitBatchFix() {
         }
         function renderItems() {
             const container = document.getElementById('items-list-container');
+            if(currentItems.length === 0) {
+                container.innerHTML = `<p style="color:#6b7280; padding:10px;">No physical items for this biblio.</p>`;
+                return;
+            }
             container.innerHTML = currentItems.map((item, idx) => `
-                <div class="item-row">
-                    <input type="text" value="${item.barcode}" id="item-bc-${idx}" style="width: 120px;" placeholder="Barcode">
-                    <input type="text" value="${item.itemcallnumber || ''}" id="item-cn-${idx}" style="flex:1;" placeholder="Call Number">
-                    <button class="btn btn-small" onclick="updateItem(${idx})">Save</button>
-                    <button class="btn btn-outline btn-small" onclick="duplicateItem(${idx})">Copy</button>
-                    <button class="btn btn-danger btn-small" onclick="deleteItem(${idx})">×</button>
+                <div class="item-row" style="flex-wrap:wrap; gap:5px; align-items:center; padding:6px 0; border-bottom:1px solid #eee;">
+                    <div style="display:flex; flex-direction:column; gap:2px;">
+                        <small style="color:#6b7280; font-size:0.7rem;">Barcode</small>
+                        <input type="text" value="${item.barcode || ''}" id="item-bc-${idx}" style="width: 120px;" placeholder="Barcode">
+                    </div>
+                    <div style="display:flex; flex-direction:column; gap:2px; flex:1; min-width:120px;">
+                        <small style="color:#6b7280; font-size:0.7rem;">Call Number</small>
+                        <input type="text" value="${item.itemcallnumber || ''}" id="item-cn-${idx}" style="flex:1;" placeholder="Call Number">
+                    </div>
+                    <div style="display:flex; flex-direction:column; gap:2px; width:100px;">
+                        <small style="color:#6b7280; font-size:0.7rem;">Branch</small>
+                        <input type="text" value="${item.homebranch || ''}" id="item-branch-${idx}" style="width:100px;" placeholder="Branch">
+                    </div>
+                    <div style="display:flex; flex-direction:column; gap:2px; width:100px;">
+                        <small style="color:#6b7280; font-size:0.7rem;">Location</small>
+                        <input type="text" value="${item.location || ''}" id="item-location-${idx}" style="width:100px;" placeholder="Location">
+                    </div>
+                    <div style="display:flex; gap:5px; align-items:flex-end;">
+                        <button class="btn btn-small" onclick="updateItem(${idx})">Save</button>
+                        <button class="btn btn-outline btn-small" onclick="duplicateItem(${idx})">Copy</button>
+                        <button class="btn btn-danger btn-small" onclick="deleteItem(${idx})">×</button>
+                    </div>
                 </div>
             `).join('');
         }
@@ -1418,7 +1751,9 @@ async function submitBatchFix() {
             const item = currentItems[idx];
             const barcode = document.getElementById(`item-bc-${idx}`).value;
             const cn = document.getElementById(`item-cn-${idx}`).value;
-            const res = await fetch(`/koha_editor/api/items/${item.itemnumber}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ barcode: barcode, itemcallnumber: cn }) });
+            const branch = document.getElementById(`item-branch-${idx}`).value;
+            const location = document.getElementById(`item-location-${idx}`).value;
+            const res = await fetch(`/koha_editor/api/items/${item.itemnumber}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ barcode: barcode, itemcallnumber: cn, homebranch: branch, location: location }) });
             const data = await res.json();
             if(data.error) alert(data.error);
             else alert("Item updated!");
@@ -1624,6 +1959,13 @@ async function submitBatchFix() {
                 loadStats();
                 loadRecords();
             }
+            // Fallback: if editor tab is active but still loading after 1s, trigger load
+            setTimeout(() => {
+                const hash = window.location.hash.replace('#', '');
+                if(hash.startsWith('editor/') && document.getElementById('marc-editor-fields').innerHTML.includes('Loading')) {
+                    openFullEditorByBiblio(hash.split('/')[1]);
+                }
+            }, 1000);
         });
 
     </script>
