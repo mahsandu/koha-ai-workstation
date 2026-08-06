@@ -1019,6 +1019,18 @@
             if(tab === 'settings') loadSettings();
         };
 
+    
+        // Initialize URL State on load
+        window.addEventListener('DOMContentLoaded', (event) => {
+            loadSettings();
+            if (typeof restoreStateFromUrl === 'function') {
+                restoreStateFromUrl();
+            } else {
+                loadStats();
+                loadRecords();
+            }
+        });
+
     </script>
 </body>
 </html>
