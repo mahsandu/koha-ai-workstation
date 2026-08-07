@@ -2158,10 +2158,33 @@ async function submitBatchFix() {
                     body: JSON.stringify({ biblionumbers, fix_type, ai_model })
                 });
                 const data = await res.json();
-                if(data.success) {
-                    alert(`Successfully queued ${data.queued} items for AI processing!`);
+                if(data.success && data.queued > 0) {
                     toggleSelectAll(false);
-                    switchTab('queue');
+                    // Try to process the first item immediately; rest stay queued
+                    const firstBib = biblionumbers[0];
+                    await startImmediateProcess({
+                        endpoint: '/koha_editor/api/process/immediate',
+                        payload: {
+                            task: {
+                                type: 'db_fix',
+                                biblionumber: firstBib,
+                                task_config: { fix_type: fix_type, ai_model: ai_model }
+                            }
+                        },
+                        title: `🤖 Batch Fix (1 of ${data.queued})`,
+                        timeoutSeconds: 45,
+                        onSuccess: (data2) => {
+                            showAlert(`Batch fix: ${data.queued} items queued. First item completed immediately; others are processing in the queue.`);
+                        },
+                        onQueue: (data2) => {
+                            showAlert(`Batch fix: ${data.queued} items queued. First item is still processing in the queue.`);
+                        },
+                        onError: (err) => {
+                            showAlert(`Batch fix: ${data.queued} items queued. First item failed: ${err}`);
+                        }
+                    });
+                } else if(data.success && data.queued === 0) {
+                    alert("Selected items are already queued.");
                 } else {
                     alert(data.error || "Failed to queue items");
                 }
@@ -2254,20 +2277,23 @@ async function submitBatchFix() {
         async function aiFixCurrentEditor() {
             const biblionumber = cachedRecords[currentBiblioIndex].biblionumber;
             const ai_model = document.getElementById('editor-ai-model').value;
-            const res = await fetch('/koha_editor/api/queue/batch', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ biblionumbers: [biblionumber], fix_type: 'auto', ai_model: ai_model })
+            await startImmediateProcess({
+                endpoint: '/koha_editor/api/process/immediate',
+                payload: {
+                    task: {
+                        type: 'db_fix',
+                        biblionumber: biblionumber,
+                        task_config: { fix_type: 'auto', ai_model: ai_model }
+                    }
+                },
+                title: '🤖 AI Auto Fix',
+                timeoutSeconds: 45,
+                onSuccess: (data) => {
+                    showAlert('AI Auto Fix completed successfully. Refresh the editor to see updated metadata.');
+                },
+                onQueue: (data) => {},
+                onError: (err) => { showAlert('AI Auto Fix failed: ' + err); }
             });
-            const data = await res.json();
-            if(data.success && data.task_ids && data.task_ids.length > 0) {
-                await fetchQueueStatus();
-                viewTaskDetails(data.task_ids[0]);
-            } else if(data.success && data.queued === 0) {
-                alert("This record is already queued or does not need fixing.");
-            } else {
-                alert(data.error || "Failed to queue item");
-            }
         }
 
         async function applyAACR2() {
@@ -2278,23 +2304,26 @@ async function submitBatchFix() {
             if (f300 && f300.subfields) { let sfa = f300.subfields.find(s => s.code === 'a'); let sfc = f300.subfields.find(s => s.code === 'c'); if (sfa) { let val = sfa.value.trim(); if(/^\d+$/.test(val)) sfa.value = val + ' p.'; else if (val.endsWith('p')) sfa.value = val + '.'; } if (sfc) { let val = sfc.value.trim(); if(/^\d+$/.test(val)) sfc.value = val + ' cm.'; else if (val.endsWith('cm')) sfc.value = val + '.'; } }
             renderMarcEditor();
 
-            // Queue a background AI task to apply AACR2 rules to the database record
+            // Run AACR2 processing immediately; fall back to queue if it takes too long
             const biblionumber = cachedRecords[currentBiblioIndex].biblionumber;
             const ai_model = document.getElementById('editor-ai-model').value;
-            const res = await fetch('/koha_editor/api/queue/batch', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ biblionumbers: [biblionumber], fix_type: 'aacr2', ai_model: ai_model })
+            await startImmediateProcess({
+                endpoint: '/koha_editor/api/process/immediate',
+                payload: {
+                    task: {
+                        type: 'db_fix',
+                        biblionumber: biblionumber,
+                        task_config: { fix_type: 'aacr2', ai_model: ai_model }
+                    }
+                },
+                title: '✨ Auto AACR2',
+                timeoutSeconds: 45,
+                onSuccess: (data) => {
+                    showAlert('AACR2 processing completed successfully. Refresh the editor to see updated metadata.');
+                },
+                onQueue: (data) => {},
+                onError: (err) => { showAlert('AACR2 processing failed: ' + err); }
             });
-            const data = await res.json();
-            if(data.success && data.task_ids && data.task_ids.length > 0) {
-                await fetchQueueStatus();
-                viewTaskDetails(data.task_ids[0]);
-            } else if(data.success && data.queued === 0) {
-                alert("This record is already queued for AACR2 processing.");
-            } else {
-                alert(data.error || "Failed to queue AACR2 task");
-            }
         }
         function loadNextRecord(offset) { const nextIdx = currentBiblioIndex + offset; if(nextIdx >= 0 && nextIdx < cachedRecords.length) openFullEditor(nextIdx); else alert("End of list!"); }
         
@@ -3128,26 +3157,152 @@ async function submitBatchFix() {
             container.innerHTML = html;
             document.getElementById('btn-process-import').disabled = false;
         }
-        async function processImportRows() {
-            if(!importRows.length) return;
-            const btn = document.getElementById('btn-process-import');
-            const originalText = btn.innerText;
-            btn.disabled = true;
-            btn.innerText = 'Submitting...';
-            document.getElementById('import-preview').innerHTML = '<p style="text-align:center; color:#2563eb;">Submitting rows to AI queue...</p>';
+
+        // --- IMMEDIATE PROCESSING MODAL & HELPER ---
+        if(typeof immediateProcessTaskId === 'undefined') { var immediateProcessTaskId = null; }
+        if(typeof immediateProcessLogInterval === 'undefined') { var immediateProcessLogInterval = null; }
+        if(typeof immediateProcessQueueFallback === 'undefined') { var immediateProcessQueueFallback = null; }
+
+        function openImmediateProcessModal(title) {
+            document.getElementById('immediate-process-title').textContent = title || '⏳ Processing...';
+            document.getElementById('immediate-process-body').innerHTML = `
+                <p style="text-align:center; color:#6b7280;">Starting AI processing...</p>
+                <div style="width:100%; background:#e5e7eb; border-radius:999px; height:8px; margin:15px 0;">
+                    <div id="immediate-process-bar" style="width:0%; background:#2563eb; height:100%; border-radius:999px; transition:width 0.3s;"></div>
+                </div>
+                <div id="immediate-process-log" style="background:#0f172a; color:#e2e8f0; font-family:monospace; font-size:0.8rem; padding:10px; border-radius:4px; max-height:200px; overflow-y:auto;">
+                    <em style="color:#94a3b8;">Waiting for logs...</em>
+                </div>
+            `;
+            document.getElementById('btn-immediate-go-queue').style.display = 'none';
+            document.getElementById('btn-immediate-close').style.display = 'none';
+            document.getElementById('immediate-process-modal').style.display = 'flex';
+        }
+
+        function closeImmediateProcessModal() {
+            document.getElementById('immediate-process-modal').style.display = 'none';
+            if(immediateProcessLogInterval) { clearInterval(immediateProcessLogInterval); immediateProcessLogInterval = null; }
+            immediateProcessTaskId = null;
+            immediateProcessQueueFallback = null;
+        }
+
+        function immediateProcessGoQueue() {
+            closeImmediateProcessModal();
+            if(immediateProcessTaskId) {
+                openProcessingPage(immediateProcessTaskId);
+            } else {
+                switchTab('queue');
+            }
+        }
+
+        async function pollImmediateProcessLog(taskId, untilFinished) {
+            const logEl = document.getElementById('immediate-process-log');
+            const bar = document.getElementById('immediate-process-bar');
+            if(!logEl) return;
+            try {
+                const res = await fetch(`/koha_editor/api/queue/task/${taskId}`);
+                const data = await res.json();
+                if(!data.success) return;
+                const task = data.task;
+                const logs = (task.processing_log || []);
+                if(logs.length > 0) {
+                    logEl.innerHTML = logs.map(e => {
+                        const color = e.level === 'error' ? '#f87171' : (e.level === 'warning' ? '#fbbf24' : '#4ade80');
+                        return `<div><span style="color:#64748b;">[${toBDTime(e.ts)}]</span> <span style="color:${color}; font-weight:bold;">${e.level.toUpperCase()}</span> ${escapeHtml(e.message)}</div>`;
+                    }).join('');
+                    logEl.scrollTop = logEl.scrollHeight;
+                }
+                // Update progress bar based on status
+                if(task.status === 'completed') bar.style.width = '100%';
+                else if(task.status === 'error') bar.style.width = '100%';
+                else if(task.status === 'processing') bar.style.width = '60%';
+                else bar.style.width = '20%';
+
+                if(untilFinished && (task.status === 'completed' || task.status === 'error')) {
+                    if(immediateProcessLogInterval) { clearInterval(immediateProcessLogInterval); immediateProcessLogInterval = null; }
+                }
+            } catch(e) { /* ignore polling errors */ }
+        }
+
+        async function startImmediateProcess({ endpoint, payload, title, onSuccess, onQueue, onError, timeoutSeconds = 45 }) {
+            immediateProcessTaskId = null;
+            immediateProcessQueueFallback = null;
+            openImmediateProcessModal(title);
 
             try {
-                const res = await fetch('/koha_editor/api/import/process', {
-                    method:'POST', headers:{'Content-Type':'application/json'},
-                    body: JSON.stringify({
-                        rows: importRows,
-                        ai_model: document.getElementById('import-ai-model').value,
-                        strategy: document.getElementById('import-strategy').value
-                    })
+                const res = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ ...payload, immediate: true, timeout_seconds: timeoutSeconds })
                 });
                 let data = {};
                 try { data = await res.json(); } catch(e) {}
-                if(res.ok && data.success) {
+
+                if(!res.ok || !data.success) {
+                    const err = data.error || 'Processing failed';
+                    document.getElementById('immediate-process-body').innerHTML = `<p style="color:red; text-align:center;">${escapeHtml(err)}</p>`;
+                    document.getElementById('btn-immediate-close').style.display = 'inline-block';
+                    if(onError) onError(err);
+                    return;
+                }
+
+                if(data.finished) {
+                    // Completed synchronously
+                    document.getElementById('immediate-process-bar').style.width = '100%';
+                    if(data.status === 'completed') {
+                        document.getElementById('immediate-process-body').innerHTML = `<p style="color:#15803d; text-align:center; font-weight:bold;">✅ Processing completed!</p>`;
+                        document.getElementById('btn-immediate-close').style.display = 'inline-block';
+                        if(onSuccess) onSuccess(data);
+                    } else {
+                        const err = (data.error || 'Task failed');
+                        document.getElementById('immediate-process-body').innerHTML = `<p style="color:red; text-align:center; font-weight:bold;">❌ ${escapeHtml(err)}</p>`;
+                        document.getElementById('btn-immediate-close').style.display = 'inline-block';
+                        if(onError) onError(err);
+                    }
+                    return;
+                }
+
+                // Timed out / still processing
+                immediateProcessTaskId = data.task_id;
+                immediateProcessQueueFallback = data.task_id;
+                document.getElementById('immediate-process-title').textContent = '⏳ Processing in Queue...';
+                document.getElementById('immediate-process-body').innerHTML = `
+                    <p style="text-align:center; color:#b45309; font-weight:bold;">Processing is taking longer than expected.</p>
+                    <p style="text-align:center; color:#6b7280;">${escapeHtml(data.message || 'The task has been queued and will continue in the background.')}</p>
+                    <div id="immediate-process-log" style="background:#0f172a; color:#e2e8f0; font-family:monospace; font-size:0.8rem; padding:10px; border-radius:4px; max-height:200px; overflow-y:auto; margin-top:10px;">
+                        <em style="color:#94a3b8;">Waiting for logs...</em>
+                    </div>
+                `;
+                document.getElementById('btn-immediate-go-queue').style.display = 'inline-block';
+                if(onQueue) onQueue(data);
+                // Poll logs briefly
+                if(immediateProcessLogInterval) clearInterval(immediateProcessLogInterval);
+                immediateProcessLogInterval = setInterval(() => pollImmediateProcessLog(data.task_id, true), 2000);
+                pollImmediateProcessLog(data.task_id, true);
+            } catch(e) {
+                document.getElementById('immediate-process-body').innerHTML = `<p style="color:red; text-align:center;">Request failed: ${escapeHtml(String(e))}</p>`;
+                document.getElementById('btn-immediate-close').style.display = 'inline-block';
+                if(onError) onError(String(e));
+            }
+        }
+
+        async function processImportRows() {
+            if(!importRows.length) return;
+            const btn = document.getElementById('btn-process-import');
+            btn.disabled = true;
+            btn.innerText = 'Processing...';
+            closeImportModal();
+
+            await startImmediateProcess({
+                endpoint: '/koha_editor/api/import/process',
+                payload: {
+                    rows: importRows,
+                    ai_model: document.getElementById('import-ai-model').value,
+                    strategy: document.getElementById('import-strategy').value
+                },
+                title: '🤖 Processing Import Rows',
+                timeoutSeconds: 45,
+                onSuccess: (data) => {
                     // Reset UI for next use
                     importRows = [];
                     document.getElementById('import-file-input').value = '';
@@ -3155,24 +3310,22 @@ async function submitBatchFix() {
                     btn.innerText = '🤖 Process with AI';
                     document.getElementById('import-preview').innerHTML = '<p style="color:#6b7280; text-align:center;">Select a CSV or Excel file to preview rows.</p>';
                     closeImportModal();
-                    // Show confirmation then jump to queue monitor
-                    openAppModal(
-                        'Processing Started',
-                        `<p style="text-align:center; font-size:1.1rem;">🚀 <b>${data.queued || 0}</b> row(s) queued for AI processing.</p><p style="text-align:center; color:#6b7280;">You can track progress in the Queue Monitor.</p>`,
-                        () => { switchTab('queue'); },
-                        'Open Queue Monitor',
-                        false
-                    );
-                } else {
-                    document.getElementById('import-preview').innerHTML = '<p style="color:red; text-align:center;">Error: ' + escapeHtml(data.error || 'Failed to queue rows') + '</p>';
+                },
+                onQueue: (data) => {
+                    // Reset UI for next use even when queued
+                    importRows = [];
+                    document.getElementById('import-file-input').value = '';
+                    btn.disabled = true;
+                    btn.innerText = '🤖 Process with AI';
+                    document.getElementById('import-preview').innerHTML = '<p style="color:#6b7280; text-align:center;">Select a CSV or Excel file to preview rows.</p>';
+                    closeImportModal();
+                },
+                onError: (err) => {
                     btn.disabled = false;
-                    btn.innerText = originalText;
+                    btn.innerText = '🤖 Process with AI';
+                    document.getElementById('import-preview').innerHTML = '<p style="color:red; text-align:center;">Error: ' + escapeHtml(err) + '</p>';
                 }
-            } catch(e) {
-                document.getElementById('import-preview').innerHTML = '<p style="color:red; text-align:center;">Request failed: ' + escapeHtml(String(e)) + '</p>';
-                btn.disabled = false;
-                btn.innerText = originalText;
-            }
+            });
         }
 
 </script>
@@ -3252,6 +3405,26 @@ async function submitBatchFix() {
                         <button class="btn btn-small btn-outline" onclick="loadSourceModalFolder('')">🏠 Root</button>
                     </div>
                     <button class="btn btn-small" onclick="processSourceModalFolder()">⚡ Process This Folder</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Immediate Processing Modal -->
+        <div id="immediate-process-modal" class="modal" style="display:none; z-index:10000;">
+            <div class="modal-content" style="max-width: 700px; width: 95%;">
+                <h3 id="immediate-process-title">⏳ Processing...</h3>
+                <div id="immediate-process-body" style="margin:15px 0;">
+                    <p style="text-align:center; color:#6b7280;">Starting AI processing...</p>
+                    <div style="width:100%; background:#e5e7eb; border-radius:999px; height:8px; margin:15px 0;">
+                        <div id="immediate-process-bar" style="width:0%; background:#2563eb; height:100%; border-radius:999px; transition:width 0.3s;"></div>
+                    </div>
+                    <div id="immediate-process-log" style="background:#0f172a; color:#e2e8f0; font-family:monospace; font-size:0.8rem; padding:10px; border-radius:4px; max-height:200px; overflow-y:auto;">
+                        <em style="color:#94a3b8;">Waiting for logs...</em>
+                    </div>
+                </div>
+                <div style="display:flex; justify-content:flex-end; gap:8px;">
+                    <button class="btn btn-outline btn-small" id="btn-immediate-go-queue" style="display:none;" onclick="immediateProcessGoQueue()">Open Queue Monitor</button>
+                    <button class="btn btn-small" id="btn-immediate-close" style="display:none;" onclick="closeImmediateProcessModal()">Close</button>
                 </div>
             </div>
         </div>

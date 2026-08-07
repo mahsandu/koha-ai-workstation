@@ -2565,6 +2565,138 @@ def parse_excel_import():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+def _insert_task(task_spec):
+    """Insert a task row and return its task_id."""
+    import uuid, sqlite3, json
+    task_id = str(uuid.uuid4())
+    sq_conn = sqlite3.connect(SQLITE_DB)
+    sq_c = sq_conn.cursor()
+    sq_c.execute('SELECT COALESCE(MAX(display_id), 0) + 1 FROM ai_task_queue')
+    next_display_id = sq_c.fetchone()[0]
+    sq_c.execute("""
+        INSERT INTO ai_task_queue (task_id, display_id, type, status, biblionumber, title, author, images, task_config)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        task_id, next_display_id,
+        task_spec.get('type', 'source_meta'),
+        task_spec.get('status', 'pending'),
+        task_spec.get('biblionumber'),
+        str(task_spec.get('title', '')),
+        str(task_spec.get('author', '')),
+        json.dumps(task_spec.get('images', [])),
+        json.dumps(task_spec.get('task_config', {}))
+    ))
+    sq_conn.commit()
+    sq_conn.close()
+    return task_id
+
+
+def _fetch_task(task_id):
+    import sqlite3, json
+    sq_conn = sqlite3.connect(SQLITE_DB)
+    sq_conn.row_factory = sqlite3.Row
+    sq_c = sq_conn.cursor()
+    sq_c.execute("SELECT * FROM ai_task_queue WHERE task_id = ?", (task_id,))
+    row = sq_c.fetchone()
+    sq_conn.close()
+    if not row:
+        return None
+    return dict(row)
+
+
+def _run_task_in_thread(task_row):
+    import threading
+    t = threading.Thread(target=run_ai_task, args=(task_row,), daemon=True)
+    t.start()
+    return t
+
+
+def _wait_for_task(task_id, timeout_seconds):
+    import time
+    start = time.time()
+    while time.time() - start < timeout_seconds:
+        task = _fetch_task(task_id)
+        if not task:
+            return None
+        if task['status'] in ('completed', 'error'):
+            return task
+        time.sleep(0.5)
+    return _fetch_task(task_id)
+
+
+@app.route('/api/process/immediate', methods=['POST'])
+@login_required
+def process_immediate():
+    """Create a task and try to run it synchronously. If it doesn't finish in
+    timeout_seconds, return the task_id so the client can follow it in the queue."""
+    import json
+    data = request.get_json() or {}
+    task_spec = data.get('task', {})
+    timeout_seconds = min(int(data.get('timeout_seconds', 45)), 120)
+
+    if not task_spec:
+        return jsonify({"success": False, "error": "No task provided"}), 400
+
+    # Validate supported types
+    task_type = task_spec.get('type', 'source_meta')
+    if task_type not in ('db_fix', 'source_meta'):
+        return jsonify({"success": False, "error": f"Immediate processing not supported for type {task_type}"}), 400
+
+    task_id = _insert_task(task_spec)
+    task_row = _fetch_task(task_id)
+
+    # Mark as processing and run immediately in a background thread
+    sq_conn = sqlite3.connect(SQLITE_DB)
+    sq_c = sq_conn.cursor()
+    sq_c.execute("UPDATE ai_task_queue SET status = 'processing', started_at = CURRENT_TIMESTAMP WHERE task_id = ?", (task_id,))
+    sq_conn.commit()
+    sq_conn.close()
+    _append_task_log(task_id, f"Immediate processing started (timeout={timeout_seconds}s)")
+
+    _run_task_in_thread(task_row)
+    final_task = _wait_for_task(task_id, timeout_seconds)
+
+    if final_task and final_task['status'] == 'completed':
+        result_data = final_task.get('result_data') or '{}'
+        try:
+            result_data = json.loads(result_data)
+        except Exception:
+            result_data = {"raw": result_data}
+        return jsonify({
+            "success": True,
+            "finished": True,
+            "task_id": task_id,
+            "display_id": final_task.get('display_id'),
+            "status": 'completed',
+            "result": result_data
+        })
+
+    if final_task and final_task['status'] == 'error':
+        result_data = final_task.get('result_data') or '{}'
+        try:
+            result_data = json.loads(result_data)
+        except Exception:
+            result_data = {"raw": result_data}
+        return jsonify({
+            "success": False,
+            "finished": True,
+            "task_id": task_id,
+            "display_id": final_task.get('display_id'),
+            "status": 'error',
+            "error": result_data.get('error', 'Task failed')
+        })
+
+    # Still running: leave it for the background queue
+    return jsonify({
+        "success": True,
+        "finished": False,
+        "task_id": task_id,
+        "display_id": final_task.get('display_id') if final_task else None,
+        "status": 'processing',
+        "message": f"Processing is taking longer than {timeout_seconds}s. Task has been queued; monitor it in Queue Monitor."
+    })
+
+
 @app.route('/api/import/process', methods=['POST'])
 @login_required
 def process_import_rows():
@@ -2573,12 +2705,14 @@ def process_import_rows():
     rows = data.get('rows', [])
     ai_model = data.get('ai_model', 'auto')
     strategy = data.get('strategy', 'enrich')
+    immediate = data.get('immediate', False)
+    timeout_seconds = min(int(data.get('timeout_seconds', 45)), 120)
     if not rows:
         return jsonify({"success": False, "error": "No rows provided"}), 400
 
     sq_conn = sqlite3.connect(SQLITE_DB)
     sq_c = sq_conn.cursor()
-    queued = 0
+    task_ids = []
     for row in rows[:1000]:  # cap for safety
         task_id = str(uuid.uuid4())
         sq_c.execute('SELECT COALESCE(MAX(display_id), 0) + 1 FROM ai_task_queue')
@@ -2591,10 +2725,51 @@ def process_import_rows():
             str(row.get('title', '')), str(row.get('author', '')), '[]',
             json.dumps({"ai_model": ai_model, "strategy": strategy, "row_data": row})
         ))
-        queued += 1
+        task_ids.append(task_id)
     sq_conn.commit()
     sq_conn.close()
-    return jsonify({"success": True, "queued": queued})
+
+    if not immediate:
+        return jsonify({"success": True, "queued": len(task_ids), "task_ids": task_ids})
+
+    # Immediate mode: try to complete as many as possible within timeout
+    import time
+    start = time.time()
+    completed = 0
+    errors = 0
+    remaining = list(task_ids)
+
+    for task_id in task_ids:
+        if time.time() - start >= timeout_seconds:
+            break
+        # Mark processing
+        sq_conn = sqlite3.connect(SQLITE_DB)
+        sq_c = sq_conn.cursor()
+        sq_c.execute("UPDATE ai_task_queue SET status = 'processing', started_at = CURRENT_TIMESTAMP WHERE task_id = ?", (task_id,))
+        sq_conn.commit()
+        sq_conn.close()
+        task_row = _fetch_task(task_id)
+        _run_task_in_thread(task_row)
+
+        # Wait for this task with the remaining budget
+        budget = timeout_seconds - (time.time() - start)
+        final_task = _wait_for_task(task_id, max(1, budget))
+        remaining.remove(task_id)
+        if final_task and final_task['status'] == 'completed':
+            completed += 1
+        elif final_task and final_task['status'] == 'error':
+            errors += 1
+
+    return jsonify({
+        "success": True,
+        "finished": len(remaining) == 0,
+        "total": len(task_ids),
+        "completed": completed,
+        "errors": errors,
+        "queued": len(remaining),
+        "task_ids": task_ids,
+        "message": f"Processed {completed} immediately, {errors} errors, {len(remaining)} queued."
+    })
 
 
 # --- BACKGROUND AI WORKER ---
@@ -2678,8 +2853,201 @@ def task_claim_loop():
             time.sleep(3)
 
 
-def ai_worker_loop():
+def run_ai_task(task_row):
+    """Execute a single AI task synchronously. Updates ai_task_queue in place."""
     import json
+    task_id = task_row['task_id']
+
+    def task_log(msg, level='info'):
+        _append_task_log(task_id, msg, level)
+
+    try:
+        raw_text = ""
+        ai_json = {}
+        b_row = None
+        old_metadata = ""
+        is_db_fix = (task_row['type'] == 'db_fix')
+        task_log(f"Task claimed: type={task_row['type']}, biblionumber={task_row['biblionumber']}, requested_engine={task_row.get('task_config')}")
+
+        if is_db_fix:
+            biblionumber = task_row['biblionumber']
+            conn = get_db_connection()
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT metadata FROM koha_mfa.biblio_metadata WHERE biblionumber = %s", (biblionumber,))
+                    row = cursor.fetchone()
+                    old_metadata = row['metadata'] if row else ""
+
+                    cursor.execute('''SELECT b.title, b.author, bi.publishercode, bi.publicationyear, bi.pages
+                        FROM koha_mfa.biblio b
+                        LEFT JOIN koha_mfa.biblioitems bi ON b.biblionumber = bi.biblionumber
+                        WHERE b.biblionumber = %s''', (biblionumber,))
+                    b_row = cursor.fetchone()
+                    raw_text = f"Title: {b_row['title']}\\nAuthor: {b_row['author']}\\nPublisher: {b_row['publishercode']}"
+                    task_log(f"Fetched biblio {biblionumber}: title={b_row['title']}, author={b_row['author']}, publisher={b_row['publishercode']}, year={b_row['publicationyear']}")
+            finally:
+                conn.close()
+
+        else:
+            images = json.loads(task_row['images']) if task_row.get('images') else []
+            if images:
+                img_name = images[0]
+                img_path = os.path.join(IMAGE_DIR, img_name)
+                task_log(f"Processing image {img_name}")
+                with open(img_path, 'rb') as f:
+                    encoded_string = base64.b64encode(f.read()).decode('utf-8')
+                ocr_payload = {'apikey': 'helloworld', 'base64Image': 'data:image/jpeg;base64,' + encoded_string, 'language': 'eng'}
+                try:
+                    ocr_res = requests.post('https://api.ocr.space/parse/image', data=ocr_payload, timeout=15)
+                    ocr_data = ocr_res.json()
+                    if not ocr_data.get('IsErroredOnProcessing'):
+                        for parsed in ocr_data.get('ParsedResults', []):
+                            raw_text += parsed.get('ParsedText', '') + " "
+                except Exception as e:
+                    raw_text = "FAILED TO EXTRACT TEXT: " + str(e)
+            if not raw_text.strip():
+                raw_text = "UNKNOWN TEXT"
+
+        task_config_str = task_row.get('task_config') or '{}'
+        try:
+            task_config = json.loads(task_config_str) if task_config_str else {}
+        except Exception:
+            task_config = {}
+
+        fix_type = task_config.get('fix_type', 'full')
+        ai_model = task_config.get('ai_model', 'deepseek')
+        task_log(f"Prepared fix_type={fix_type}, ai_model={ai_model}, text_length={len(raw_text)}")
+
+        if is_db_fix:
+            if fix_type == 'metadata':
+                prompt = f"Fix missing basic metadata. Output JSON with keys: title, author, publishercode, publicationyear, isbn.\nDo not output anything else.\n\nBook Info:\n{raw_text}"
+            elif fix_type == 'classification':
+                prompt = f"Classify this book. Output JSON with keys: ddc, subjects.\nDo not output anything else.\n\nBook Info:\n{raw_text}"
+            elif fix_type == 'aacr2':
+                prompt = f"Apply AACR2 cataloging rules to this bibliographic record. Correct punctuation, capitalization, and field structure. Output JSON with keys: title, author, publishercode, publicationyear, isbn, ddc, subjects.\nDo not output anything else.\n\nBook Info:\n{raw_text}"
+            else:
+                prompt = f"Fix all missing catalog metadata. Output JSON with keys: title, author, publishercode, publicationyear, isbn, ddc, subjects.\nDo not output anything else.\n\nBook Info:\n{raw_text}"
+        else:
+            prompt = f"Extract metadata from OCR text. Output JSON with keys: title, author, publishercode, publicationyear, isbn, ddc, subjects.\nDo not output anything else.\n\nText:\n{raw_text}"
+
+        task_log(f"Built prompt ({len(prompt)} chars)")
+
+        ai_warning = ""
+        try:
+            task_log(f"Calling AI engines (requested={ai_model})...")
+            ai_text, engine_used = run_ai_with_fallback(prompt, ai_model)
+            task_log(f"AI responded via engine={engine_used}")
+            logging.info(f"Task {task_id} engine={engine_used} requested={ai_model}")
+
+            ai_text = re.sub(r'<thinking>.*?<\/thinking>', '', ai_text, flags=re.DOTALL).strip()
+            json_match = re.search(r'\{.*?\}', ai_text, flags=re.DOTALL)
+            if json_match:
+                try:
+                    ai_json = json.loads(json_match.group(0))
+                    task_log(f"Parsed AI JSON: {list(ai_json.keys())}")
+                except Exception as parse_err:
+                    ai_json = {"title": "JSON Parse Error", "author": "Error"}
+                    task_log(f"JSON parse failed: {parse_err}", level='warning')
+            else:
+                ai_json = {"title": "Extraction Failed", "author": "Failed"}
+                task_log("No JSON object found in AI response", level='warning')
+        except Exception as engine_err:
+            engine_used = 'heuristic'
+            ai_warning = str(engine_err)
+            task_log(f"AI engines failed: {engine_err}", level='error')
+            logging.error(f"Task {task_id} AI engines unavailable, using heuristic fallback: {engine_err}")
+            ai_json = {
+                "title": (b_row['title'] if is_db_fix and b_row else task_row.get('title', '')) or "",
+                "author": (b_row['author'] if is_db_fix and b_row else task_row.get('author', '')) or "",
+                "publishercode": (b_row['publishercode'] if is_db_fix and b_row else "") or "",
+                "publicationyear": (b_row['publicationyear'] if is_db_fix and b_row else "") or "",
+                "isbn": "",
+                "ddc": "",
+                "subjects": ""
+            }
+        final_ddc = ai_json.get("ddc", "")
+        final_subjects = ai_json.get("subjects", "")
+        isbn_to_check = ai_json.get('isbn', '')
+
+        if not is_db_fix:
+            isbn_match = re.search(r'(?:ISBN(?:-1[03])?:? )?(?=[0-9X]{10}$|(?=(?:[0-9]+[- ]){3})[- 0-9X]{13}$|97[89][0-9]{10}$|(?=(?:[0-9]+[- ]){4})[- 0-9]{17}$)(?:97[89][- ]?)?[0-9]{1,5}[- ]?[0-9]+[- ]?[0-9]+[- ]?[0-9X]', raw_text, re.IGNORECASE)
+            if not isbn_to_check and isbn_match:
+                isbn_to_check = re.sub(r'[^0-9X]', '', isbn_match.group(0).upper())
+
+        if isbn_to_check:
+            task_log(f"Looking up ISBN {isbn_to_check} on OpenLibrary")
+            try:
+                ol_res = requests.get(f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn_to_check}&jscmd=data&format=json", timeout=10)
+                ol_data = ol_res.json()
+                book_key = f"ISBN:{isbn_to_check}"
+                if book_key in ol_data:
+                    book_info = ol_data[book_key]
+                    if "classifications" in book_info and "dewey_decimal_class" in book_info["classifications"]:
+                        final_ddc = book_info["classifications"]["dewey_decimal_class"][0]
+                    if "subjects" in book_info:
+                        final_subjects = ", ".join([s['name'] for s in book_info["subjects"]][:3])
+                    task_log(f"OpenLibrary enrichment: ddc={final_ddc}, subjects={final_subjects[:80]}")
+                else:
+                    task_log(f"OpenLibrary returned no data for ISBN {isbn_to_check}")
+            except Exception as ol_err:
+                task_log(f"OpenLibrary lookup failed: {ol_err}", level='warning')
+
+        if engine_used == 'heuristic':
+            raise RuntimeError(f"AI unavailable; heuristic fallback not saved. {ai_warning}")
+
+        result_data = {
+            "title": ai_json.get("title", ""),
+            "author": ai_json.get("author", ""),
+            "publishercode": ai_json.get("publishercode", ""),
+            "publicationyear": ai_json.get("publicationyear", ""),
+            "isbn": isbn_to_check,
+            "ddc": final_ddc,
+            "subjects": final_subjects,
+            "engine": engine_used,
+            "engine_warning": ai_warning,
+            "raw_ocr": raw_text[:500] + "..."
+        }
+        task_log(f"AI result preview: title={result_data['title']}, author={result_data['author']}, year={result_data['publicationyear']}, ddc={result_data['ddc']}")
+
+        if is_db_fix:
+            conn = get_db_connection()
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute("INSERT INTO koha_mfa.biblio_history (biblionumber, old_metadata) VALUES (%s, %s)", (biblionumber, old_metadata))
+                    new_title = result_data['title'] or b_row['title']
+                    new_author = result_data['author'] or b_row['author']
+                    new_pub = result_data['publishercode'] or b_row['publishercode']
+                    new_year = result_data['publicationyear'] or b_row['publicationyear']
+                    cursor.execute("UPDATE koha_mfa.biblio SET title = %s, author = %s WHERE biblionumber = %s", (new_title, new_author, biblionumber))
+                    cursor.execute("UPDATE koha_mfa.biblioitems SET publishercode = %s, publicationyear = %s WHERE biblionumber = %s", (new_pub, new_year, biblionumber))
+                    conn.commit()
+                    task_log(f"Updated Koha DB: title={new_title}, author={new_author}, publisher={new_pub}, year={new_year}")
+            except Exception as db_err:
+                task_log(f"Koha DB update failed: {db_err}", level='error')
+                logging.error(f"Failed DB auto-fix: {db_err}")
+            finally:
+                conn.close()
+
+        # Update SQLite
+        sq_conn2 = sqlite3.connect(SQLITE_DB)
+        sq_c2 = sq_conn2.cursor()
+        sq_c2.execute("UPDATE ai_task_queue SET status = 'completed', result_data = ?, completed_at = CURRENT_TIMESTAMP WHERE task_id = ?", (json.dumps(result_data), task_id))
+        sq_conn2.commit()
+        sq_conn2.close()
+        task_log("Task completed successfully")
+        logging.info(f"Task {task_id} completed.")
+
+    except Exception as e:
+        task_log(f"Task failed: {e}", level='error')
+        sq_conn3 = sqlite3.connect(SQLITE_DB)
+        sq_c3 = sq_conn3.cursor()
+        sq_c3.execute("UPDATE ai_task_queue SET status = 'error', result_data = ? WHERE task_id = ?", (json.dumps({"error": str(e)}), task_id))
+        sq_conn3.commit()
+        sq_conn3.close()
+        logging.error(f"Task {task_id} failed: {e}")
+
+
+def ai_worker_loop():
     while True:
         task = None
         try:
@@ -2695,198 +3063,7 @@ def ai_worker_loop():
         if not task:
             continue
 
-        task_id = task['task_id']
-        try:
-            def task_log(msg, level='info'):
-                _append_task_log(task_id, msg, level)
-
-            raw_text = ""
-            ai_json = {}
-            is_db_fix = (task['type'] == 'db_fix')
-            task_log(f"Task claimed: type={task['type']}, biblionumber={task['biblionumber']}, requested_engine={task['task_config']}")
-
-            if is_db_fix:
-                biblionumber = task['biblionumber']
-                conn = get_db_connection()
-                try:
-                    with conn.cursor() as cursor:
-                        cursor.execute("SELECT metadata FROM koha_mfa.biblio_metadata WHERE biblionumber = %s", (biblionumber,))
-                        row = cursor.fetchone()
-                        old_metadata = row['metadata'] if row else ""
-
-                        cursor.execute('''SELECT b.title, b.author, bi.publishercode, bi.publicationyear, bi.pages
-                            FROM koha_mfa.biblio b
-                            LEFT JOIN koha_mfa.biblioitems bi ON b.biblionumber = bi.biblionumber
-                            WHERE b.biblionumber = %s''', (biblionumber,))
-                        b_row = cursor.fetchone()
-                        raw_text = f"Title: {b_row['title']}\\nAuthor: {b_row['author']}\\nPublisher: {b_row['publishercode']}"
-                        task_log(f"Fetched biblio {biblionumber}: title={b_row['title']}, author={b_row['author']}, publisher={b_row['publishercode']}, year={b_row['publicationyear']}")
-                finally:
-                    conn.close()
-
-            else:
-                images = json.loads(task['images']) if task['images'] else []
-                if images:
-                    img_name = images[0]
-                    img_path = os.path.join(IMAGE_DIR, img_name)
-                    task_log(f"Processing image {img_name}")
-                    with open(img_path, 'rb') as f:
-                        encoded_string = base64.b64encode(f.read()).decode('utf-8')
-                    ocr_payload = {'apikey': 'helloworld', 'base64Image': 'data:image/jpeg;base64,' + encoded_string, 'language': 'eng'}
-                    try:
-                        ocr_res = requests.post('https://api.ocr.space/parse/image', data=ocr_payload, timeout=15)
-                        ocr_data = ocr_res.json()
-                        if not ocr_data.get('IsErroredOnProcessing'):
-                            for parsed in ocr_data.get('ParsedResults', []):
-                                raw_text += parsed.get('ParsedText', '') + " "
-                    except Exception as e:
-                        raw_text = "FAILED TO EXTRACT TEXT: " + str(e)
-                if not raw_text.strip():
-                    raw_text = "UNKNOWN TEXT"
-
-            import json
-            try:
-                task_config_str = task['task_config']
-            except:
-                task_config_str = '{}'
-            try:
-                task_config = json.loads(task_config_str) if task_config_str else {}
-            except:
-                task_config = {}
-
-            fix_type = task_config.get('fix_type', 'full')
-            ai_model = task_config.get('ai_model', 'deepseek')
-            task_log(f"Prepared fix_type={fix_type}, ai_model={ai_model}, text_length={len(raw_text)}")
-
-            if is_db_fix:
-                if fix_type == 'metadata':
-                    prompt = f"Fix missing basic metadata. Output JSON with keys: title, author, publishercode, publicationyear, isbn.\nDo not output anything else.\n\nBook Info:\n{raw_text}"
-                elif fix_type == 'classification':
-                    prompt = f"Classify this book. Output JSON with keys: ddc, subjects.\nDo not output anything else.\n\nBook Info:\n{raw_text}"
-                elif fix_type == 'aacr2':
-                    prompt = f"Apply AACR2 cataloging rules to this bibliographic record. Correct punctuation, capitalization, and field structure. Output JSON with keys: title, author, publishercode, publicationyear, isbn, ddc, subjects.\nDo not output anything else.\n\nBook Info:\n{raw_text}"
-                else:
-                    prompt = f"Fix all missing catalog metadata. Output JSON with keys: title, author, publishercode, publicationyear, isbn, ddc, subjects.\nDo not output anything else.\n\nBook Info:\n{raw_text}"
-            else:
-                prompt = f"Extract metadata from OCR text. Output JSON with keys: title, author, publishercode, publicationyear, isbn, ddc, subjects.\nDo not output anything else.\n\nText:\n{raw_text}"
-
-            task_log(f"Built prompt ({len(prompt)} chars)")
-
-            ai_warning = ""
-            try:
-                task_log(f"Calling AI engines (requested={ai_model})...")
-                ai_text, engine_used = run_ai_with_fallback(prompt, ai_model)
-                task_log(f"AI responded via engine={engine_used}")
-                logging.info(f"Task {task_id} engine={engine_used} requested={ai_model}")
-
-                ai_text = re.sub(r'<thinking>.*?<\/thinking>', '', ai_text, flags=re.DOTALL).strip()
-                json_match = re.search(r'\{.*?\}', ai_text, flags=re.DOTALL)
-                if json_match:
-                    try:
-                        ai_json = json.loads(json_match.group(0))
-                        task_log(f"Parsed AI JSON: {list(ai_json.keys())}")
-                    except Exception as parse_err:
-                        ai_json = {"title": "JSON Parse Error", "author": "Error"}
-                        task_log(f"JSON parse failed: {parse_err}", level='warning')
-                else:
-                    ai_json = {"title": "Extraction Failed", "author": "Failed"}
-                    task_log("No JSON object found in AI response", level='warning')
-            except Exception as engine_err:
-                engine_used = 'heuristic'
-                ai_warning = str(engine_err)
-                task_log(f"AI engines failed: {engine_err}", level='error')
-                logging.error(f"Task {task_id} AI engines unavailable, using heuristic fallback: {engine_err}")
-                ai_json = {
-                    "title": (b_row['title'] if is_db_fix and b_row else task['title']) or "",
-                    "author": (b_row['author'] if is_db_fix and b_row else task['author']) or "",
-                    "publishercode": (b_row['publishercode'] if is_db_fix and b_row else "") or "",
-                    "publicationyear": (b_row['publicationyear'] if is_db_fix and b_row else "") or "",
-                    "isbn": "",
-                    "ddc": "",
-                    "subjects": ""
-                }
-            final_ddc = ai_json.get("ddc", "")
-            final_subjects = ai_json.get("subjects", "")
-            isbn_to_check = ai_json.get('isbn', '')
-
-            if not is_db_fix:
-                isbn_match = re.search(r'(?:ISBN(?:-1[03])?:? )?(?=[0-9X]{10}$|(?=(?:[0-9]+[- ]){3})[- 0-9X]{13}$|97[89][0-9]{10}$|(?=(?:[0-9]+[- ]){4})[- 0-9]{17}$)(?:97[89][- ]?)?[0-9]{1,5}[- ]?[0-9]+[- ]?[0-9]+[- ]?[0-9X]', raw_text, re.IGNORECASE)
-                if not isbn_to_check and isbn_match:
-                    isbn_to_check = re.sub(r'[^0-9X]', '', isbn_match.group(0).upper())
-
-            if isbn_to_check:
-                task_log(f"Looking up ISBN {isbn_to_check} on OpenLibrary")
-                try:
-                    ol_res = requests.get(f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn_to_check}&jscmd=data&format=json", timeout=10)
-                    ol_data = ol_res.json()
-                    book_key = f"ISBN:{isbn_to_check}"
-                    if book_key in ol_data:
-                        book_info = ol_data[book_key]
-                        if "classifications" in book_info and "dewey_decimal_class" in book_info["classifications"]:
-                            final_ddc = book_info["classifications"]["dewey_decimal_class"][0]
-                        if "subjects" in book_info:
-                            final_subjects = ", ".join([s['name'] for s in book_info["subjects"]][:3])
-                        task_log(f"OpenLibrary enrichment: ddc={final_ddc}, subjects={final_subjects[:80]}")
-                    else:
-                        task_log(f"OpenLibrary returned no data for ISBN {isbn_to_check}")
-                except Exception as ol_err:
-                    task_log(f"OpenLibrary lookup failed: {ol_err}", level='warning')
-
-            # If every engine failed, don't treat the heuristic placeholder as a real fix.
-            # Mark the task error so it can be retried once an AI engine is available.
-            if engine_used == 'heuristic':
-                raise RuntimeError(f"AI unavailable; heuristic fallback not saved. {ai_warning}")
-
-            result_data = {
-                "title": ai_json.get("title", ""),
-                "author": ai_json.get("author", ""),
-                "publishercode": ai_json.get("publishercode", ""),
-                "publicationyear": ai_json.get("publicationyear", ""),
-                "isbn": isbn_to_check,
-                "ddc": final_ddc,
-                "subjects": final_subjects,
-                "engine": engine_used,
-                "engine_warning": ai_warning,
-                "raw_ocr": raw_text[:500] + "..."
-            }
-            task_log(f"AI result preview: title={result_data['title']}, author={result_data['author']}, year={result_data['publicationyear']}, ddc={result_data['ddc']}")
-
-            if is_db_fix:
-                conn = get_db_connection()
-                try:
-                    with conn.cursor() as cursor:
-                        cursor.execute("INSERT INTO koha_mfa.biblio_history (biblionumber, old_metadata) VALUES (%s, %s)", (biblionumber, old_metadata))
-                        new_title = result_data['title'] or b_row['title']
-                        new_author = result_data['author'] or b_row['author']
-                        new_pub = result_data['publishercode'] or b_row['publishercode']
-                        new_year = result_data['publicationyear'] or b_row['publicationyear']
-                        cursor.execute("UPDATE koha_mfa.biblio SET title = %s, author = %s WHERE biblionumber = %s", (new_title, new_author, biblionumber))
-                        cursor.execute("UPDATE koha_mfa.biblioitems SET publishercode = %s, publicationyear = %s WHERE biblionumber = %s", (new_pub, new_year, biblionumber))
-                        conn.commit()
-                        task_log(f"Updated Koha DB: title={new_title}, author={new_author}, publisher={new_pub}, year={new_year}")
-                except Exception as db_err:
-                    task_log(f"Koha DB update failed: {db_err}", level='error')
-                    logging.error(f"Failed DB auto-fix: {db_err}")
-                finally:
-                    conn.close()
-
-            # Update SQLite
-            sq_conn2 = sqlite3.connect(SQLITE_DB)
-            sq_c2 = sq_conn2.cursor()
-            sq_c2.execute("UPDATE ai_task_queue SET status = 'completed', result_data = ?, completed_at = CURRENT_TIMESTAMP WHERE task_id = ?", (json.dumps(result_data), task_id))
-            sq_conn2.commit()
-            sq_conn2.close()
-            task_log("Task completed successfully")
-            logging.info(f"Task {task_id} completed.")
-
-        except Exception as e:
-            task_log(f"Task failed: {e}", level='error')
-            sq_conn3 = sqlite3.connect(SQLITE_DB)
-            sq_c3 = sq_conn3.cursor()
-            sq_c3.execute("UPDATE ai_task_queue SET status = 'error', result_data = ? WHERE task_id = ?", (json.dumps({"error": str(e)}), task_id))
-            sq_conn3.commit()
-            sq_conn3.close()
-            logging.error(f"Task {task_id} failed: {e}")
+        run_ai_task(task)
 
 def _ensure_original(input_path):
     """Preserve original image as _original.<ext> before any destructive edit."""
