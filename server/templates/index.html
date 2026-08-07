@@ -3040,7 +3040,7 @@ async function submitBatchFix() {
         }
 
         // --- IMPORT CSV / EXCEL ---
-        let importRows = [];
+        if(typeof importRows === 'undefined') { var importRows = []; }
         function openImportModal() {
             document.getElementById('import-modal').style.display = 'flex';
         }
