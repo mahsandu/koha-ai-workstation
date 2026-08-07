@@ -1598,9 +1598,9 @@ def source_file_ops():
             return send_from_directory(os.path.dirname(target_file), os.path.basename(target_file))
         
         # Read text types
-        if ext in ['txt', 'json', 'md', 'csv', 'mrc']:
+        if ext in ['txt', 'json', 'md', 'csv', 'mrc', 'mrk']:
             try:
-                with open(target_file, 'r', encoding='utf-8') as f:
+                with open(target_file, 'r', encoding='utf-8', errors='replace') as f:
                     content = f.read()
                 return jsonify({"success": True, "content": content})
             except Exception as e:

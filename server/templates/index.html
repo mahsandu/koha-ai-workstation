@@ -1340,7 +1340,7 @@
             if(['jpg', 'jpeg', 'png', 'gif'].includes(ext)) {
                 btnSave.style.display = 'none';
                 container.innerHTML = `<img src="/koha_editor/api/source/file?path=${encodeURIComponent(path)}" style="max-width:100%; max-height:100%; object-fit:contain;">`;
-            } else if(['txt', 'json', 'md', 'csv', 'mrc'].includes(ext)) {
+            } else if(['txt', 'json', 'md', 'csv', 'mrc', 'mrk'].includes(ext)) {
                 btnSave.style.display = 'block';
                 container.innerHTML = `<p>Loading...</p>`;
                 try {
@@ -3016,7 +3016,7 @@ async function submitBatchFix() {
             const ext = name.split('.').pop().toLowerCase();
             if(['jpg','jpeg','png','gif'].includes(ext)) {
                 container.innerHTML = `<img src="/koha_editor/api/source/file?path=${encodeURIComponent(path)}" style="max-width:100%; max-height:100%; object-fit:contain;">`;
-            } else if(['txt','json','md','csv','mrc'].includes(ext)) {
+            } else if(['txt','json','md','csv','mrc','mrk'].includes(ext)) {
                 try {
                     const res = await fetch(`/koha_editor/api/source/file?path=${encodeURIComponent(path)}`);
                     const data = await res.json();
