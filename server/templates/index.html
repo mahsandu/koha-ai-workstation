@@ -2915,10 +2915,10 @@ async function submitBatchFix() {
             });
         }
 
-        // Override existing renderMarcFields to also attach preview listeners
-        const _origRenderMarcFields = renderMarcFields;
-        renderMarcFields = function() {
-            _origRenderMarcFields();
+        // Hook live-preview updates into the MARC editor renderer
+        const _origRenderMarcEditor = renderMarcEditor;
+        renderMarcEditor = function() {
+            _origRenderMarcEditor();
             document.querySelectorAll('.marc-field').forEach(attachMarcFieldListeners);
             renderEditorPreview();
         };
