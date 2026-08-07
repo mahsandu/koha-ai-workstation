@@ -2227,6 +2227,8 @@ async function submitBatchFix() {
             if(data.success && data.task_ids && data.task_ids.length > 0) {
                 await fetchQueueStatus();
                 viewTaskDetails(data.task_ids[0]);
+            } else if(data.success && data.queued === 0) {
+                alert("This record is already queued or does not need fixing.");
             } else {
                 alert(data.error || "Failed to queue item");
             }
@@ -2252,6 +2254,8 @@ async function submitBatchFix() {
             if(data.success && data.task_ids && data.task_ids.length > 0) {
                 await fetchQueueStatus();
                 viewTaskDetails(data.task_ids[0]);
+            } else if(data.success && data.queued === 0) {
+                alert("This record is already queued for AACR2 processing.");
             } else {
                 alert(data.error || "Failed to queue AACR2 task");
             }
