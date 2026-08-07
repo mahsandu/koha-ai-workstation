@@ -800,6 +800,37 @@ def get_record_summary(biblionumber):
                             if sf.get('code') == '2':
                                 classification = sf.get('value', '')
                                 break
+            # Try to find a matching source folder by barcode or title prefix
+            source_folder = None
+            try:
+                barcode_norm = (row.get('barcode') or '').strip().lstrip('0') or '0'
+                title_prefix = re.sub(r'[^\w\s]', '', (row.get('title') or '').lower()).split()[:3]
+                title_prefix = ' '.join(title_prefix)
+                if os.path.isdir(SOURCE_DIR):
+                    candidates = []
+                    for name in os.listdir(SOURCE_DIR):
+                        full = os.path.join(SOURCE_DIR, name)
+                        if not os.path.isdir(full):
+                            continue
+                        norm_name = re.sub(r'[^\w\s]', '', name.lower())
+                        score = 0
+                        if barcode_norm and barcode_norm in norm_name:
+                            score += 3
+                        if title_prefix and title_prefix in norm_name:
+                            score += 2
+                        # Check subfolder name hints
+                        if barcode_norm:
+                            bname = os.path.basename(full)
+                            if barcode_norm in re.sub(r'[^\w\s]', '', bname.lower()):
+                                score += 1
+                        if score > 0:
+                            candidates.append((score, name))
+                    if candidates:
+                        candidates.sort(key=lambda x: x[0], reverse=True)
+                        source_folder = candidates[0][1]
+            except Exception as e:
+                logging.warning(f"Source folder lookup failed for biblio {biblionumber}: {e}")
+
             return jsonify({
                 "success": True,
                 "biblionumber": biblionumber,
@@ -811,7 +842,8 @@ def get_record_summary(biblionumber):
                 "itemcallnumber": row.get('itemcallnumber', ''),
                 "homebranch": row.get('homebranch', ''),
                 "location": row.get('location', ''),
-                "classification": classification
+                "classification": classification,
+                "source_folder": source_folder
             })
     finally:
         conn.close()

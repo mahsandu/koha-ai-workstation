@@ -173,7 +173,10 @@
         /* Full Page Editor */
         .editor-container { max-width: 1400px; margin: 0 auto; background: white; border-radius: 12px; border: 1px solid var(--border-color); padding: 30px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); }
         .editor-top-nav { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--border-color); padding-bottom: 15px; margin-bottom: 20px; }
-        .editor-title { font-size: 1.5rem; font-weight: 700; color: var(--primary); }
+        .editor-title { font-size: 1.15rem; font-weight: 700; color: var(--primary); display: flex; flex-wrap: wrap; align-items: center; gap: 6px; line-height: 1.3; }
+        .editor-title .bib-badge { background: #f3e8ff; color: #7e22ce; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
+        .editor-title .src-badge { background: #ecfdf5; color: #047857; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; cursor: pointer; }
+        .editor-title .src-badge:hover { background: #d1fae5; }
         
         .editor-split { display: grid; grid-template-columns: 1fr; gap: 30px; }
         
@@ -702,16 +705,16 @@
         <div id="tab-editor" class="tab-content">
             <div class="editor-container">
                 <div class="editor-top-nav">
-                    <div style="display:flex; gap:8px;">
-                        <button class="btn btn-outline" onclick="switchTab('browser')">← Back to Browser</button>
-                        <button class="btn btn-outline" onclick="openBiblioSearchModal()">🔍 Find Biblio</button>
-                        <button class="btn btn-outline" onclick="openSourceModal()">📁 Source</button>
-                        <button class="btn btn-outline" onclick="openImportModal()">📥 Import CSV/Excel</button>
+                    <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                        <button class="btn btn-outline btn-small" onclick="switchTab('browser')">← Browser</button>
+                        <button class="btn btn-outline btn-small" onclick="openBiblioSearchModal()">🔍 Find</button>
+                        <button class="btn btn-outline btn-small" onclick="openSourceModal()">📁 Source</button>
+                        <button class="btn btn-outline btn-small" onclick="openImportModal()">📥 Import</button>
                     </div>
                     <div class="editor-title" id="editor-title">Editing Biblio #---</div>
-                    <div style="display:flex; gap:8px;">
-                        <button class="btn btn-outline" onclick="loadNextRecord(-1)">← Prev</button>
-                        <button class="btn btn-outline" onclick="loadNextRecord(1)">Next →</button>
+                    <div style="display:flex; gap:6px;">
+                        <button class="btn btn-outline btn-small" onclick="loadNextRecord(-1)">← Prev</button>
+                        <button class="btn btn-outline btn-small" onclick="loadNextRecord(1)">Next →</button>
                     </div>
                 </div>
 
@@ -2200,12 +2203,15 @@ async function submitBatchFix() {
         let currentMarcFields = [];
         async function openFullEditor(index) {
             currentBiblioIndex = index; const biblio = cachedRecords[index];
-            document.getElementById('editor-title').textContent = `Editing Biblio #${biblio.biblionumber} (Barcode: ${biblio.barcode})`;
+            setEditorTitle({biblionumber: biblio.biblionumber, barcode: biblio.barcode});
             document.getElementById('marc-editor-fields').innerHTML = "Loading MARC XML...";
             switchTab('editor', true, `editor/${biblio.biblionumber}`);
             const res = await fetch(`/koha_editor/api/records/${biblio.biblionumber}/raw`); const data = await res.json();
             currentMarcFields = data.fields || []; renderMarcEditor();
             loadItems(biblio.biblionumber);
+            fetch(`/koha_editor/api/records/${biblio.biblionumber}/summary`).then(r => r.json()).then(summary => {
+                if(summary.success) setEditorTitle(summary);
+            });
         }
         
         async function openFullEditorByBiblio(biblionumber) {
@@ -2227,17 +2233,22 @@ async function submitBatchFix() {
             document.getElementById('editor-title').textContent = `Editing Biblio #${biblionumber}`;
             renderMarcEditor();
             loadItems(biblionumber);
-            // Fetch summary info (barcode, classification, etc.) for the title header
             fetch(`/koha_editor/api/records/${biblionumber}/summary`).then(r => r.json()).then(summary => {
-                if(summary.success) {
-                    const titleEl = document.getElementById('editor-title');
-                    const parts = [`Biblio #${biblionumber}`];
-                    if(summary.barcode) parts.push(`Barcode: ${summary.barcode}`);
-                    if(summary.itemcallnumber) parts.push(`Call No: ${summary.itemcallnumber}`);
-                    if(summary.classification) parts.push(`Class: ${summary.classification}`);
-                    titleEl.textContent = 'Editing ' + parts.join(' | ');
-                }
+                if(summary.success) setEditorTitle(summary);
             });
+        }
+
+        function setEditorTitle(info) {
+            const el = document.getElementById('editor-title');
+            const bn = info.biblionumber || '';
+            const bc = info.barcode || '';
+            const cn = info.itemcallnumber || '';
+            const src = info.source_folder || '';
+            let html = `<span class="bib-badge">#${bn}</span>`;
+            if(bc) html += `<span class="bib-badge">BC ${bc}</span>`;
+            if(cn) html += `<span class="bib-badge">CN ${cn}</span>`;
+            if(src) html += `<span class="src-badge" onclick="openSourceModal('${src.replace(/'/g, "\\'")}')" title="Open source folder: ${src}">📁 ${src}</span>`;
+            el.innerHTML = html;
         }
         
         async function aiFixCurrentEditor() {
