@@ -1924,6 +1924,8 @@ def source_image_tool():
     tool = data.get('tool', '')
     params = data.get('params', {})
     scope = data.get('scope', 'selected')  # selected | folder
+    immediate = data.get('immediate', False)
+    timeout_seconds = min(int(data.get('timeout_seconds', 45)), 120)
     if tool not in ['crop', 'optimize', 'deskew', 'colorize', 'autofix', 'rotate', 'smart_crop', 'smart_rotate']:
         return jsonify({"error": "Invalid tool"}), 400
 
@@ -1958,8 +1960,42 @@ def source_image_tool():
             params = params or {}
             params['mode'] = 'smart'
 
-        task_ids = _image_tool_queue(paths, base_tool, params)
-        return jsonify({"success": True, "task_ids": task_ids, "image_count": len(paths)})
+        if not immediate:
+            task_ids = _image_tool_queue(paths, base_tool, params)
+            return jsonify({"success": True, "task_ids": task_ids, "image_count": len(paths)})
+
+        # Immediate mode: run the tool synchronously for each path and return
+        import time
+        start = time.time()
+        results = []
+        errors = 0
+        for p in paths:
+            if time.time() - start >= timeout_seconds:
+                break
+            target = resolve_source_path(p)
+            result = process_image_tool(target, base_tool, params)
+            results.append({"path": p, "success": result.get("success", False), "error": result.get("error")})
+            if not result.get("success"):
+                errors += 1
+        processed = len(results)
+        remaining = paths[processed:]
+        if remaining:
+            task_ids = _image_tool_queue(remaining, base_tool, params)
+        else:
+            task_ids = []
+        status = 'completed' if errors == 0 and len(remaining) == 0 else ('error' if processed > 0 and errors == processed else 'completed')
+        return jsonify({
+            "success": True,
+            "finished": len(remaining) == 0,
+            "status": status,
+            "image_count": len(paths),
+            "processed": processed,
+            "errors": errors,
+            "queued": len(remaining),
+            "task_ids": task_ids,
+            "results": results,
+            "message": f"Processed {processed}/{len(paths)} images." + (f" Queued {len(remaining)} remaining." if remaining else "")
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -3076,18 +3112,33 @@ def _ensure_original(input_path):
 
 
 def _smart_crop_bbox(img):
-    """Detect content boundaries using adaptive threshold + contour logic."""
+    """Detect content boundaries using python-smart-crop (energy-based saliency).
+
+    Falls back to adaptive-threshold contour logic if smartcrop is unavailable
+    or fails.
+    """
     import numpy as np
     from PIL import ImageOps
     try:
+        import smartcrop
+        import json
+        sc = smartcrop.SmartCrop()
+        w, h = img.size
+        crop_width = min(w, h * 3 // 4)
+        crop_height = min(h, w * 4 // 3)
+        result = sc.crop(img, crop_width, crop_height)
+        if result and result.get('top_crop'):
+            c = result['top_crop']
+            return (c['x'], c['y'], c['x'] + c['width'], c['y'] + c['height'])
+    except Exception:
+        pass
+    # Fallback adaptive-threshold contour logic
+    try:
         gray = img.convert('L')
-        # Increase contrast and invert so text/content is dark
         arr = np.array(ImageOps.autocontrast(gray))
-        # Adaptive threshold: content darker than local mean
         from scipy.ndimage import uniform_filter
         mean = uniform_filter(arr.astype(float), size=15, mode='constant')
         binary = (arr < (mean - 10)).astype(np.uint8) * 255
-        # Find bounding box of content
         rows = np.any(binary > 0, axis=1)
         cols = np.any(binary > 0, axis=0)
         if not rows.any() or not cols.any():
@@ -3096,7 +3147,6 @@ def _smart_crop_bbox(img):
         bottom = len(rows) - np.argmax(rows[::-1])
         left = np.argmax(cols)
         right = len(cols) - np.argmax(cols[::-1])
-        # Add small padding
         w, h = img.size
         pad = 5
         return (max(0, left - pad), max(0, top - pad), min(w, right + pad), min(h, bottom + pad))

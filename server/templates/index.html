@@ -1540,14 +1540,37 @@
             loadSourceFolder(currentSourcePath);
         }
 
-        async function actionImageTool(tool, params) {
-            let paths = getSelectedSourceFiles().filter(p => /\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(p));
+        async function actionImageTool(tool, params, ctx) {
+            ctx = ctx || {};
+            let paths = (ctx.paths || getSelectedSourceFiles()).filter(p => /\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(p));
+            const path = ctx.path || currentSourcePath;
             const scope = paths.length > 0 ? 'selected' : 'folder';
-            if(scope === 'folder' && !currentSourcePath) {
+            const immediate = ctx.immediate !== false;
+            if(scope === 'folder' && !path) {
                 showAlert("Open a folder or select image files."); return;
             }
-            const body = {paths: paths, tool: tool, path: currentSourcePath, scope: scope};
+            const body = {paths: paths, tool: tool, path: path, scope: scope, immediate: immediate};
             if(params) body.params = params;
+
+            if(immediate) {
+                await startImmediateProcess({
+                    endpoint: '/koha_editor/api/source/image_tool',
+                    payload: body,
+                    title: `🖼 ${tool.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}`,
+                    timeoutSeconds: ctx.timeoutSeconds || 30,
+                    onSuccess: (data) => {
+                        if(ctx.onDone) ctx.onDone(data);
+                        else if(currentPreviewFile) previewSourceFile(currentPreviewFile, currentPreviewFile.split('/').pop());
+                        loadSourceFolder(currentSourcePath);
+                    },
+                    onQueue: (data) => {
+                        if(ctx.onDone) ctx.onDone(data);
+                    },
+                    onError: (err) => { showAlert(String(err)); }
+                });
+                return;
+            }
+
             const res = await fetch('/koha_editor/api/source/image_tool', {
                 method: 'POST', headers: {'Content-Type':'application/json'},
                 body: JSON.stringify(body)
@@ -3006,6 +3029,8 @@ async function submitBatchFix() {
 
         // --- SOURCE MODAL ---
         let sourceModalPath = '';
+        let sourceModalSelected = '';
+        let sourceModalSelectedName = '';
         function openSourceModal() {
             document.getElementById('source-modal').style.display = 'flex';
             loadSourceModalFolder('');
@@ -3027,24 +3052,37 @@ async function submitBatchFix() {
                 data.items.forEach(item => {
                     const icon = item.is_dir ? '📁' : '📄';
                     const itemPath = item.path.replace(/'/g, "\\'");
+                    const selected = sourceModalSelected === item.path ? 'background:#dbeafe;' : '';
                     if(item.is_dir) {
-                        html += `<div style="padding:6px; cursor:pointer; border-bottom:1px solid #eee;" onclick="loadSourceModalFolder('${itemPath}')">${icon} ${escapeHtml(item.name)}</div>`;
+                        html += `<div style="padding:6px; cursor:pointer; border-bottom:1px solid #eee; ${selected}" onclick="loadSourceModalFolder('${itemPath}')">${icon} ${escapeHtml(item.name)}</div>`;
                     } else {
-                        html += `<div style="padding:6px; cursor:pointer; border-bottom:1px solid #eee;" onclick="previewSourceModalFile('${itemPath}', '${escapeHtml(item.name)}')">${icon} ${escapeHtml(item.name)}</div>`;
+                        html += `<div style="padding:6px; cursor:pointer; border-bottom:1px solid #eee; display:flex; align-items:center; ${selected}" onclick="previewSourceModalFile('${itemPath}', '${escapeHtml(item.name)}')">
+                            <input type="radio" name="source-modal-radio" style="margin-right:8px;" onchange="selectSourceModalFile('${itemPath}', '${escapeHtml(item.name)}')" ${sourceModalSelected === item.path ? 'checked' : ''} onclick="event.stopPropagation();">
+                            <span style="flex:1;">${icon} ${escapeHtml(item.name)}</span>
+                        </div>`;
                     }
                 });
                 list.innerHTML = html;
             } catch(e) { list.innerHTML = '<p style="color:red">Failed to load.</p>'; }
+        }
+        function selectSourceModalFile(path, name) {
+            sourceModalSelected = path;
+            sourceModalSelectedName = name;
+            previewSourceModalFile(path, name);
+            loadSourceModalFolder(sourceModalPath);
         }
         function sourceModalUp() {
             const parent = sourceModalPath.split('/').slice(0,-1).join('/');
             loadSourceModalFolder(parent);
         }
         async function previewSourceModalFile(path, name) {
+            sourceModalSelected = path;
+            sourceModalSelectedName = name;
             const container = document.getElementById('source-modal-preview');
             const ext = name.split('.').pop().toLowerCase();
             if(['jpg','jpeg','png','gif'].includes(ext)) {
-                container.innerHTML = `<img src="/koha_editor/api/source/file?path=${encodeURIComponent(path)}" style="max-width:100%; max-height:100%; object-fit:contain;">`;
+                const ts = Date.now();
+                container.innerHTML = `<img src="/koha_editor/api/source/file?path=${encodeURIComponent(path)}&_t=${ts}" style="max-width:100%; max-height:100%; object-fit:contain;">`;
             } else if(['txt','json','md','csv','mrc','mrk'].includes(ext)) {
                 try {
                     const res = await fetch(`/koha_editor/api/source/file?path=${encodeURIComponent(path)}`);
@@ -3054,6 +3092,26 @@ async function submitBatchFix() {
             } else {
                 container.innerHTML = '<p style="color:#6b7280;">No preview available.</p>';
             }
+        }
+        function sourceModalActionImageTool(tool, params) {
+            if(!sourceModalSelected) {
+                showAlert('Select an image file first.');
+                return;
+            }
+            actionImageTool(tool, params, {paths: [sourceModalSelected], path: sourceModalPath, immediate: true, onDone: () => {
+                previewSourceModalFile(sourceModalSelected, sourceModalSelectedName);
+            }});
+        }
+        function sourceModalActionRotatePrompt() {
+            if(!sourceModalSelected) { showAlert('Select an image file first.'); return; }
+            openAppModal('Rotate Image',
+                `<p>Enter rotation angle (degrees). Positive values rotate clockwise.</p>
+                 <input type="number" id="rotate-angle" style="width:100%; padding:8px;" value="90" step="1">`,
+                () => {
+                    const angle = parseFloat(document.getElementById('rotate-angle').value) || 0;
+                    sourceModalActionImageTool('rotate', {angle: angle, mode: 'manual'});
+                }, 'Rotate', true);
+            setTimeout(() => { const el = document.getElementById('rotate-angle'); if(el) el.focus(); }, 50);
         }
         function processSourceModalFolder() {
             if(!sourceModalPath) { showAlert('Select a folder first.'); return; }
@@ -3393,6 +3451,17 @@ async function submitBatchFix() {
                 <span class="close" onclick="closeSourceModal()">&times;</span>
                 <h3>📁 Related Source Folder</h3>
                 <p id="source-modal-path" style="font-family:monospace; color:#6b7280; margin-bottom:10px;">/</p>
+                <div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; align-items:center;">
+                    <span style="font-size:0.85rem; font-weight:600; color:#6b7280;">Image:</span>
+                    <button class="btn btn-outline btn-small" onclick="sourceModalActionImageTool('crop')">🖼 Auto Crop</button>
+                    <button class="btn btn-outline btn-small" onclick="sourceModalActionImageTool('smart_crop')">🧠 Smart Crop</button>
+                    <button class="btn btn-outline btn-small" onclick="sourceModalActionImageTool('optimize')">✨ Optimize</button>
+                    <button class="btn btn-outline btn-small" onclick="sourceModalActionImageTool('deskew')">📐 De-skew</button>
+                    <button class="btn btn-outline btn-small" onclick="sourceModalActionImageTool('smart_rotate')">🔄 Auto Rotate</button>
+                    <button class="btn btn-outline btn-small" onclick="sourceModalActionRotatePrompt()">↻ Manual Rotate</button>
+                    <button class="btn btn-outline btn-small" onclick="sourceModalActionImageTool('colorize')">🎨 Colorize</button>
+                    <button class="btn btn-outline btn-small" onclick="sourceModalActionImageTool('autofix')">🔧 Auto Fix</button>
+                </div>
                 <div class="source-modal-browser">
                     <div class="source-modal-list" id="source-modal-list">Loading...</div>
                     <div class="source-modal-preview" id="source-modal-preview">
