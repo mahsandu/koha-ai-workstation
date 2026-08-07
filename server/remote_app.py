@@ -2499,6 +2499,72 @@ def get_queue_list():
         "limit": limit
     })
 
+
+
+@app.route('/api/import/parse_excel', methods=['POST'])
+@login_required
+def parse_excel_import():
+    import io
+    file = request.files.get('file')
+    if not file:
+        return jsonify({"success": False, "error": "No file uploaded"}), 400
+    try:
+        name = file.filename.lower()
+        content = file.read()
+        if name.endswith('.csv'):
+            text = content.decode('utf-8', errors='replace')
+            lines = [l for l in text.splitlines() if l.strip()]
+            if len(lines) < 2:
+                return jsonify({"success": True, "rows": []})
+            headers = [h.strip().strip('"') for h in lines[0].split(',')]
+            rows = []
+            for line in lines[1:]:
+                vals = [v.strip().strip('"') for v in line.split(',')]
+                rows.append({headers[i]: vals[i] if i < len(vals) else '' for i in range(len(headers))})
+            return jsonify({"success": True, "rows": rows})
+        try:
+            import pandas as pd
+            df = pd.read_excel(io.BytesIO(content))
+            rows = df.head(1000).fillna('').astype(str).to_dict(orient='records')
+            return jsonify({"success": True, "rows": rows})
+        except Exception as e:
+            return jsonify({"success": False, "error": f"Excel parse failed: {e}"}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/import/process', methods=['POST'])
+@login_required
+def process_import_rows():
+    import uuid, sqlite3, json
+    data = request.get_json() or {}
+    rows = data.get('rows', [])
+    ai_model = data.get('ai_model', 'auto')
+    strategy = data.get('strategy', 'enrich')
+    if not rows:
+        return jsonify({"success": False, "error": "No rows provided"}), 400
+
+    sq_conn = sqlite3.connect(SQLITE_DB)
+    sq_c = sq_conn.cursor()
+    queued = 0
+    for row in rows[:1000]:  # cap for safety
+        task_id = str(uuid.uuid4())
+        sq_c.execute('SELECT COALESCE(MAX(display_id), 0) + 1 FROM ai_task_queue')
+        next_display_id = sq_c.fetchone()[0]
+        sq_c.execute("""
+            INSERT INTO ai_task_queue (task_id, display_id, type, status, biblionumber, title, author, images, task_config)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            task_id, next_display_id, 'source_meta', 'pending', None,
+            str(row.get('title', '')), str(row.get('author', '')), '[]',
+            json.dumps({"ai_model": ai_model, "strategy": strategy, "row_data": row})
+        ))
+        queued += 1
+    sq_conn.commit()
+    sq_conn.close()
+    return jsonify({"success": True, "queued": queued})
+
+
 # --- BACKGROUND AI WORKER ---
 
 def _check_stalled_tasks(timeout_seconds=300):

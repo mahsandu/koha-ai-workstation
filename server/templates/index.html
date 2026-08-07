@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sothik IT | Koha AI Workstation</title>
     <link href="https://fonts.googleapis.com/css2?family=Dosis:wght@400;600;700&display=swap" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js">
+    </script>
     <script>
         // --- SETTINGS ---
         async function startFixerBatch(biblionumber = null) {
@@ -90,6 +91,7 @@
             const result = await res.json();
             if(result.success) alert("Configuration saved securely!");
         }
+    
     </script>
 
     <style>
@@ -265,6 +267,202 @@
             margin: 0 4px;
         }
 
+    
+        /* === MIGHTY CATALOGUE EDITOR === */
+        .editor-full-layout {
+            display: grid;
+            grid-template-columns: minmax(420px, 1.4fr) minmax(360px, 1fr) minmax(320px, 0.8fr);
+            gap: 20px;
+            align-items: start;
+        }
+        .editor-column {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        }
+        .editor-column h3 {
+            margin-top: 0;
+            color: var(--primary);
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 10px;
+            font-size: 1.15rem;
+        }
+        .editor-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 15px;
+        }
+        .essential-fields {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 15px;
+        }
+        .essential-fields button {
+            padding: 4px 10px;
+            font-size: 0.8rem;
+            border-radius: 12px;
+            background: #f3e8ff;
+            color: #7e22ce;
+            border: 1px solid #d8b4fe;
+            cursor: pointer;
+        }
+        .essential-fields button:hover { background: #e9d5ff; }
+        .preview-tabs {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 15px;
+            border-bottom: 2px solid var(--border-color);
+        }
+        .preview-tab {
+            padding: 8px 14px;
+            cursor: pointer;
+            font-weight: 600;
+            color: var(--text-light);
+            border-bottom: 3px solid transparent;
+            margin-bottom: -2px;
+        }
+        .preview-tab.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+        }
+        .preview-pane { display: none; }
+        .preview-pane.active { display: block; }
+        .book-card {
+            width: 100%;
+            max-width: 340px;
+            min-height: 520px;
+            margin: 0 auto 15px;
+            border: 1px solid #333;
+            border-radius: 4px;
+            padding: 25px;
+            background: #fff;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            font-family: 'Times New Roman', Times, serif;
+            position: relative;
+        }
+        .book-card-back {
+            background: #faf9f6;
+        }
+        .card-label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            color: #666;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }
+        .card-main-title {
+            font-size: 1.35rem;
+            font-weight: bold;
+            margin: 10px 0 15px;
+            line-height: 1.3;
+            text-align: center;
+        }
+        .card-author {
+            font-size: 1.1rem;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .card-pub {
+            text-align: center;
+            font-size: 0.95rem;
+            margin-bottom: 25px;
+        }
+        .card-field {
+            margin-bottom: 10px;
+            font-size: 0.92rem;
+        }
+        .card-divider {
+            border-top: 1px solid #ccc;
+            margin: 15px 0;
+        }
+        .spine-label-preview {
+            width: 40px;
+            height: 220px;
+            border: 1px solid #333;
+            margin: 0 auto 15px;
+            background: #fff;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            padding: 8px 2px;
+            writing-mode: vertical-rl;
+            text-orientation: mixed;
+            transform: rotate(180deg);
+            font-family: 'Times New Roman', Times, serif;
+            font-size: 0.85rem;
+            word-break: break-word;
+        }
+        .barcode-preview {
+            text-align: center;
+            margin: 15px 0;
+            padding: 15px;
+            border: 1px dashed #ccc;
+            border-radius: 6px;
+        }
+        .barcode-preview svg { max-width: 100%; }
+        .source-modal-browser {
+            height: 400px;
+            display: flex;
+            gap: 10px;
+        }
+        .source-modal-list {
+            flex: 0 0 220px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            overflow-y: auto;
+            padding: 8px;
+        }
+        .source-modal-preview {
+            flex: 1;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            overflow: auto;
+            padding: 10px;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+        }
+        .import-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            max-height: 50vh;
+            overflow: auto;
+        }
+        .import-row {
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 10px;
+            background: #fafafa;
+        }
+        .import-row.edited { background: #fef3c7; }
+        @media (max-width: 1200px) {
+            .editor-full-layout { grid-template-columns: 1fr; }
+        }
+        @media print {
+            body * { visibility: hidden; }
+            #print-area, #print-area * { visibility: visible; }
+            #print-area {
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100%;
+                display: flex;
+                flex-wrap: wrap;
+                gap: 20px;
+                justify-content: center;
+            }
+            .book-card, .spine-label-print, .barcode-print {
+                break-inside: avoid;
+                box-shadow: none;
+            }
+        }
+
     </style>
 </head>
 <body>
@@ -278,6 +476,9 @@
         <div class="nav-tabs">
             <div class="nav-tab active" onclick="switchTab('dashboard')">
                 <span style="margin-right:8px;">📊</span> Dashboard
+            </div>
+            <div class="nav-tab" onclick="switchTab('editor')">
+                <span style="margin-right:8px;">✏️</span> Editor
             </div>
             <div class="nav-tab" onclick="switchTab('browser')">
                 <span style="margin-right:8px;">🔍</span> Catalog
@@ -476,44 +677,88 @@
         <div id="tab-editor" class="tab-content">
             <div class="editor-container">
                 <div class="editor-top-nav">
-                    <div>
+                    <div style="display:flex; gap:8px;">
                         <button class="btn btn-outline" onclick="switchTab('browser')">← Back to Browser</button>
+                        <button class="btn btn-outline" onclick="openBiblioSearchModal()">🔍 Find Biblio</button>
+                        <button class="btn btn-outline" onclick="openSourceModal()">📁 Source</button>
+                        <button class="btn btn-outline" onclick="openImportModal()">📥 Import CSV/Excel</button>
                     </div>
                     <div class="editor-title" id="editor-title">Editing Biblio #---</div>
-                    <div>
+                    <div style="display:flex; gap:8px;">
                         <button class="btn btn-outline" onclick="loadNextRecord(-1)">← Prev</button>
                         <button class="btn btn-outline" onclick="loadNextRecord(1)">Next →</button>
                     </div>
                 </div>
-                
-                <div class="editor-split">
-                    <!-- MARC Data -->
-                    <div>
-                        <div style="margin-bottom: 20px; display:flex; justify-content: space-between;">
-                            <h2 style="margin:0;">Dynamic MARC Editor</h2>
-                            <div style="display:flex; gap: 10px;">
-                                <select id="editor-ai-model" style="padding:6px; border-radius:4px; border:1px solid #ccc; font-size:0.85rem;">
-                                    <option value="fallback">Gemini (Cloud) - Fast</option>
-                                    <option value="deepseek">DeepSeek (Local) - Slow</option>
-                                </select>
-                                <button class="btn btn-outline" style="border-color: #8b5cf6; color: #8b5cf6;" onclick="aiFixCurrentEditor()">🤖 AI Auto Fix</button>
-                                
-                                <button class="btn btn-outline" style="border-color: #059669; color: #059669;" onclick="applyAACR2()">✨ Auto AACR2</button>
-                                <button class="btn btn-outline" onclick="addMarcField()">+ Add Field</button>
-                                <button class="btn" id="btn-save-full" onclick="saveFullRecord()">Save Record</button>
-                            </div>
+
+                <div class="editor-full-layout">
+                    <!-- COLUMN 1: MARC Editor -->
+                    <div class="editor-column">
+                        <h3>Dynamic MARC Editor</h3>
+                        <div class="editor-toolbar">
+                            <select id="editor-ai-model" style="padding:6px; border-radius:4px; border:1px solid #ccc; font-size:0.85rem;">
+                                <option value="fallback">Gemini (Cloud) - Fast</option>
+                                <option value="deepseek">DeepSeek (Local) - Slow</option>
+                            </select>
+                            <button class="btn btn-small btn-outline" style="border-color: #8b5cf6; color: #8b5cf6;" onclick="aiFixCurrentEditor()">🤖 AI Auto Fix</button>
+                            <button class="btn btn-small btn-outline" style="border-color: #059669; color: #059669;" onclick="applyAACR2()">✨ Auto AACR2</button>
+                            <button class="btn btn-small btn-outline" onclick="addMarcField()">+ Add Field</button>
+                            <button class="btn btn-small" id="btn-save-full" onclick="saveFullRecord()">Save Record</button>
+                        </div>
+                        <div style="font-size:0.85rem; color:#6b7280; margin-bottom:8px;">Quick essential fields:</div>
+                        <div class="essential-fields">
+                            <button onclick="addEssentialField('020')">020 ISBN</button>
+                            <button onclick="addEssentialField('022')">022 ISSN</button>
+                            <button onclick="addEssentialField('082')">082 DDC</button>
+                            <button onclick="addEssentialField('100')">100 Author</button>
+                            <button onclick="addEssentialField('245')">245 Title</button>
+                            <button onclick="addEssentialField('250')">250 Edition</button>
+                            <button onclick="addEssentialField('260')">260 Pub</button>
+                            <button onclick="addEssentialField('264')">264 Pub(RDA)</button>
+                            <button onclick="addEssentialField('300')">300 Phys</button>
+                            <button onclick="addEssentialField('490')">490 Series</button>
+                            <button onclick="addEssentialField('500')">500 Note</button>
+                            <button onclick="addEssentialField('650')">650 Subject</button>
+                            <button onclick="addEssentialField('700')">700 Added Auth</button>
+                            <button onclick="addEssentialField('852')">852 Holding</button>
+                            <button onclick="addEssentialField('952')">952 Item</button>
                         </div>
                         <div id="marc-editor-fields"></div>
                     </div>
-                    
-                    <!-- Items Data -->
-                    <div class="items-panel">
+
+                    <!-- COLUMN 2: Live Preview -->
+                    <div class="editor-column">
+                        <h3>Live Preview</h3>
+                        <div class="preview-tabs">
+                            <div class="preview-tab active" onclick="switchPreviewTab('card-front')">Front Card</div>
+                            <div class="preview-tab" onclick="switchPreviewTab('card-back')">Back Card</div>
+                            <div class="preview-tab" onclick="switchPreviewTab('spine')">Spine</div>
+                            <div class="preview-tab" onclick="switchPreviewTab('barcode')">Barcode</div>
+                        </div>
+                        <div id="preview-card-front" class="preview-pane active">
+                            <div class="book-card" id="book-card-front"></div>
+                        </div>
+                        <div id="preview-card-back" class="preview-pane">
+                            <div class="book-card book-card-back" id="book-card-back"></div>
+                        </div>
+                        <div id="preview-spine" class="preview-pane">
+                            <div class="spine-label-preview" id="spine-label"></div>
+                        </div>
+                        <div id="preview-barcode" class="preview-pane">
+                            <div class="barcode-preview" id="barcode-preview"></div>
+                        </div>
+                        <div style="display:flex; gap:8px; justify-content:center; margin-top:10px;">
+                            <button class="btn btn-small btn-outline" onclick="printPreview()">🖨️ Print Preview</button>
+                            <button class="btn btn-small btn-outline" onclick="downloadPreviewPDF()">📄 Save PDF</button>
+                        </div>
+                    </div>
+
+                    <!-- COLUMN 3: Items & Tools -->
+                    <div class="editor-column">
                         <h3>Physical Items (Copies)</h3>
-                        
                         <div style="background: #f3f4f6; padding: 10px; border-radius: 6px; margin-bottom: 15px;">
                             <strong>Add New Item</strong>
                             <div style="display:flex; gap: 5px; margin-top:5px;">
-                                <input type="text" id="new-item-barcode" placeholder="Barcode or Range (e.g. 10001-10005)" style="flex:1;">
+                                <input type="text" id="new-item-barcode" placeholder="Barcode or Range" style="flex:1;">
                                 <button class="btn btn-small" onclick="autoSuggestBarcode()" title="Find lowest missing barcode gap">Find Gap</button>
                             </div>
                             <div style="display:flex; gap: 5px; margin-top:5px;">
@@ -522,9 +767,18 @@
                             </div>
                             <button class="btn" style="width:100%; margin-top:10px;" onclick="createNewItem()">+ Add Item</button>
                         </div>
-                        
                         <div id="items-list-container" style="max-height: 400px; overflow-y: auto;">
                             <!-- Items go here -->
+                        </div>
+                        <div style="margin-top:20px; padding-top:15px; border-top:2px solid var(--border-color);">
+                            <h3 style="margin-top:0;">Catalog Tools</h3>
+                            <div style="display:flex; flex-direction:column; gap:8px;">
+                                <button class="btn btn-small btn-outline" onclick="openSourceModal()">📁 Related Source Folder</button>
+                                <button class="btn btn-small btn-outline" onclick="openImportModal()">📥 Import CSV/Excel + AI</button>
+                                <button class="btn btn-small btn-outline" onclick="openBiblioSearchModal()">🔍 Open Another Biblio</button>
+                                <button class="btn btn-small btn-outline" onclick="printSpineLabels()">🏷️ Print Spine Labels</button>
+                                <button class="btn btn-small btn-outline" onclick="printBarcodes()">🔳 Print Barcodes</button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -2069,7 +2323,7 @@ async function submitBatchFix() {
                 return;
             }
             container.innerHTML = currentItems.map((item, idx) => `
-                <div class="item-row" style="flex-wrap:wrap; gap:5px; align-items:center; padding:6px 0; border-bottom:1px solid #eee;">
+                <div class="item-row" data-idx="${idx}" style="flex-wrap:wrap; gap:5px; align-items:center; padding:6px 0; border-bottom:1px solid #eee;">
                     <div style="display:flex; flex-direction:column; gap:2px;">
                         <small style="color:#6b7280; font-size:0.7rem;">Barcode</small>
                         <input type="text" value="${item.barcode || ''}" id="item-bc-${idx}" style="width: 120px;" placeholder="Barcode">
@@ -2093,6 +2347,11 @@ async function submitBatchFix() {
                     </div>
                 </div>
             `).join('');
+            // Attach listeners so preview updates when item fields change
+            document.querySelectorAll('.item-row input[id^="item-bc-"], .item-row input[id^="item-cn-"]').forEach(inp => {
+                inp.addEventListener('input', renderEditorPreview);
+            });
+            if(typeof renderEditorPreview === 'function') renderEditorPreview();
         }
         async function autoSuggestBarcode() {
             const res = await fetch(`/koha_editor/api/next_barcode`);
@@ -2374,16 +2633,455 @@ async function submitBatchFix() {
                 loadStats();
                 loadRecords();
             }
+            // Handle editor tab / deep link
+            const hash = window.location.hash.replace('#', '');
+            if(hash === 'editor' || hash.startsWith('editor/')) {
+                switchTab('editor', false);
+                if(hash.startsWith('editor/')) {
+                    const bibId = hash.split('/')[1];
+                    setTimeout(() => openFullEditorByBiblio(bibId), 300);
+                }
+            }
             // Fallback: if editor tab is active but still loading after 1s, trigger load
             setTimeout(() => {
-                const hash = window.location.hash.replace('#', '');
-                if(hash.startsWith('editor/') && document.getElementById('marc-editor-fields').innerHTML.includes('Loading')) {
-                    openFullEditorByBiblio(hash.split('/')[1]);
+                const h2 = window.location.hash.replace('#', '');
+                if(h2.startsWith('editor/') && document.getElementById('marc-editor-fields').innerHTML.includes('Loading')) {
+                    openFullEditorByBiblio(h2.split('/')[1]);
                 }
             }, 1000);
         });
 
-    </script>
+    
+            // --- MIGHTY EDITOR: PREVIEW, PRINT, MODALS ---
+
+        function switchPreviewTab(tab) {
+            document.querySelectorAll('.preview-tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.preview-pane').forEach(p => p.classList.remove('active'));
+            event.currentTarget.classList.add('active');
+            document.getElementById('preview-' + tab).classList.add('active');
+            renderEditorPreview();
+        }
+
+        function getMarcField(tag, code) {
+            const fields = document.querySelectorAll('.marc-field');
+            for(const f of fields) {
+                const t = f.querySelector('.marc-tag')?.value;
+                if(t !== tag) continue;
+                if(code === undefined) {
+                    const vals = [];
+                    f.querySelectorAll('.marc-sub-value').forEach(v => vals.push(v.value));
+                    return vals.join(' ');
+                }
+                const subs = f.querySelectorAll('.marc-subfield');
+                for(const s of subs) {
+                    const c = s.querySelector('.marc-sub-code')?.value;
+                    if(c === code) return s.querySelector('.marc-sub-value')?.value || '';
+                }
+            }
+            return '';
+        }
+
+        function getTitleStatement() {
+            const a = getMarcField('245', 'a');
+            const b = getMarcField('245', 'b');
+            const c = getMarcField('245', 'c');
+            let title = a;
+            if(b) title += ' : ' + b;
+            return {title, responsibility: c};
+        }
+
+        function getPublication() {
+            const a = getMarcField('260', 'a') || getMarcField('264', 'a');
+            const b = getMarcField('260', 'b') || getMarcField('264', 'b');
+            const c = getMarcField('260', 'c') || getMarcField('264', 'c');
+            return {place: a, publisher: b, year: c};
+        }
+
+        function getAuthors() {
+            const authors = [];
+            const main = getMarcField('100', 'a');
+            if(main) authors.push(main);
+            const fields = document.querySelectorAll('.marc-field');
+            fields.forEach(f => {
+                const tag = f.querySelector('.marc-tag')?.value;
+                if(tag === '700' || tag === '110' || tag === '710') {
+                    const a = f.querySelector('.marc-sub-value')?.value;
+                    if(a) authors.push(a);
+                }
+            });
+            return authors;
+        }
+
+        function getSubjects() {
+            const subs = [];
+            const fields = document.querySelectorAll('.marc-field');
+            fields.forEach(f => {
+                const tag = f.querySelector('.marc-tag')?.value;
+                if(tag === '650' || tag === '651' || tag === '630') {
+                    const val = f.querySelector('.marc-sub-value')?.value;
+                    if(val) subs.push(val);
+                }
+            });
+            return subs;
+        }
+
+        function getPhysicalDesc() {
+            return getMarcField('300', 'a') + (getMarcField('300', 'b') ? ' : ' + getMarcField('300', 'b') : '') + (getMarcField('300', 'c') ? ' ; ' + getMarcField('300', 'c') : '');
+        }
+
+        function getDDC() {
+            return getMarcField('082', 'a') || getMarcField('082', '2') || '';
+        }
+
+        function getISBN() {
+            return getMarcField('020', 'a') || '';
+        }
+
+        function getSeries() {
+            return getMarcField('490', 'a');
+        }
+
+        function getItemsForPreview() {
+            const items = [];
+            document.querySelectorAll('.item-row').forEach(row => {
+                const bcInput = row.querySelector('input[id^="item-bc-"]');
+                const cnInput = row.querySelector('input[id^="item-cn-"]');
+                const barcode = bcInput?.value || '';
+                const call = cnInput?.value || '';
+                if(barcode || call) items.push({barcode, callnumber: call});
+            });
+            return items;
+        }
+
+        function renderEditorPreview() {
+            const {title, responsibility} = getTitleStatement();
+            const pub = getPublication();
+            const authors = getAuthors();
+            const subjects = getSubjects();
+            const phys = getPhysicalDesc();
+            const ddc = getDDC();
+            const isbn = getISBN();
+            const series = getSeries();
+            const items = getItemsForPreview();
+            const firstItem = items[0] || {barcode: '', callnumber: ''};
+
+            // Front card
+            document.getElementById('book-card-front').innerHTML = `
+                <div class="card-label">Title Statement</div>
+                <div class="card-main-title">${escapeHtml(title || '[No title]')}</div>
+                ${responsibility ? `<div class="card-author">${escapeHtml(responsibility)}</div>` : ''}
+                <div class="card-divider"></div>
+                <div class="card-label">Author(s)</div>
+                <div class="card-field" style="text-align:center; font-size:1.05rem;">${authors.map(escapeHtml).join('<br>') || '-'}</div>
+                <div class="card-divider"></div>
+                <div class="card-label">Publication</div>
+                <div class="card-pub">
+                    ${pub.place ? escapeHtml(pub.place) + ' : ' : ''}${pub.publisher ? escapeHtml(pub.publisher) : '[publisher not stated]'}
+                    ${pub.year ? ', ' + escapeHtml(pub.year) : ''}
+                </div>
+                ${series ? `<div class="card-label">Series</div><div class="card-field">${escapeHtml(series)}</div>` : ''}
+                ${isbn ? `<div class="card-label">ISBN</div><div class="card-field">${escapeHtml(isbn)}</div>` : ''}
+                ${ddc ? `<div class="card-label">Dewey Decimal Classification</div><div class="card-field">${escapeHtml(ddc)}</div>` : ''}
+            `;
+
+            // Back card
+            document.getElementById('book-card-back').innerHTML = `
+                <div class="card-label">Summary / Subjects</div>
+                <div class="card-field">${subjects.length ? subjects.map(escapeHtml).join('; ') : '<i>No subjects recorded</i>'}</div>
+                <div class="card-divider"></div>
+                <div class="card-label">Physical Description</div>
+                <div class="card-field">${escapeHtml(phys) || '<i>No physical description</i>'}</div>
+                <div class="card-divider"></div>
+                <div class="card-label">Local Holdings</div>
+                ${items.length ? items.map(it => `<div class="card-field">Call: ${escapeHtml(it.callnumber || '-')}</div>`).join('') : '<div class="card-field"><i>No items</i></div>'}
+                <div class="card-divider"></div>
+                <div style="font-size:0.8rem; color:#666; text-align:center; margin-top:20px;">
+                    AACR2/RDA cataloguing preview<br>
+                    Marine Fisheries Academy Library
+                </div>
+            `;
+
+            // Spine label
+            document.getElementById('spine-label').textContent = (firstItem.callnumber || ddc || '[no call number]').toUpperCase();
+
+            // Barcode
+            const bcContainer = document.getElementById('barcode-preview');
+            bcContainer.innerHTML = `<svg id="editor-barcode-svg"></svg><div style="margin-top:5px; font-family:monospace;">${escapeHtml(firstItem.barcode || 'NO BARCODE')}</div>`;
+            if(firstItem.barcode && typeof JsBarcode !== 'undefined') {
+                try {
+                    JsBarcode('#editor-barcode-svg', firstItem.barcode, {format: 'CODE128', width: 2, height: 60, displayValue: false});
+                } catch(e) { bcContainer.innerHTML = '<i>Barcode render error</i>'; }
+            } else {
+                bcContainer.querySelector('svg').style.display = 'none';
+            }
+        }
+
+        function addEssentialField(tag) {
+            const defaults = {
+                '020': {ind1:' ', ind2:' ', subfields:[{code:'a', value:''}]},
+                '022': {ind1:' ', ind2:' ', subfields:[{code:'a', value:''}]},
+                '082': {ind1:'0', ind2:'4', subfields:[{code:'a', value:''}]},
+                '100': {ind1:'1', ind2:' ', subfields:[{code:'a', value:''}]},
+                '245': {ind1:'1', ind2:'0', subfields:[{code:'a', value:''}, {code:'c', value:''}]},
+                '250': {ind1:' ', ind2:' ', subfields:[{code:'a', value:''}]},
+                '260': {ind1:' ', ind2:' ', subfields:[{code:'a', value:''}, {code:'b', value:''}, {code:'c', value:''}]},
+                '264': {ind1:' ', ind2:'1', subfields:[{code:'a', value:''}, {code:'b', value:''}, {code:'c', value:''}]},
+                '300': {ind1:' ', ind2:' ', subfields:[{code:'a', value:''}, {code:'b', value:''}, {code:'c', value:''}]},
+                '490': {ind1:'0', ind2:' ', subfields:[{code:'a', value:''}]},
+                '500': {ind1:' ', ind2:' ', subfields:[{code:'a', value:''}]},
+                '650': {ind1:' ', ind2:'0', subfields:[{code:'a', value:''}]},
+                '700': {ind1:'1', ind2:' ', subfields:[{code:'a', value:''}]},
+                '852': {ind1:' ', ind2:' ', subfields:[{code:'a', value:''}, {code:'h', value:''}]},
+                '952': {ind1:' ', ind2:' ', subfields:[{code:'p', value:''}, {code:'o', value:''}]}
+            };
+            const def = defaults[tag] || {ind1:' ', ind2:' ', subfields:[{code:'a', value:''}]};
+            currentMarcFields.push({ tag: tag, ind1: def.ind1, ind2: def.ind2, subfields: JSON.parse(JSON.stringify(def.subfields)) });
+            renderMarcEditor();
+        }
+
+        // Hook preview on any MARC input change
+        function attachMarcFieldListeners(el) {
+            el.querySelectorAll('input').forEach(inp => {
+                inp.addEventListener('input', renderEditorPreview);
+            });
+        }
+
+        // Override existing renderMarcFields to also attach preview listeners
+        const _origRenderMarcFields = renderMarcFields;
+        renderMarcFields = function() {
+            _origRenderMarcFields();
+            document.querySelectorAll('.marc-field').forEach(attachMarcFieldListeners);
+            renderEditorPreview();
+        };
+
+        function printPreview() {
+            const front = document.getElementById('book-card-front').outerHTML;
+            const back = document.getElementById('book-card-back').outerHTML;
+            const spine = document.getElementById('spine-label').outerHTML;
+            const barcode = document.getElementById('barcode-preview').innerHTML;
+            document.getElementById('print-area').innerHTML = `
+                <div style="display:flex; flex-wrap:wrap; gap:20px; justify-content:center; padding:20px;">
+                    <div>${front}</div>
+                    <div>${back}</div>
+                    <div class="spine-label-print" style="transform:none; writing-mode:vertical-rl; text-orientation:mixed; width:40px; height:220px; border:1px solid #333; display:flex; align-items:center; justify-content:center; padding:8px 2px;">${spine}</div>
+                    <div class="barcode-print" style="border:1px dashed #ccc; padding:15px; text-align:center;">${barcode}</div>
+                </div>
+            `;
+            window.print();
+        }
+
+        function downloadPreviewPDF() {
+            if(typeof window.print === 'function') {
+                printPreview();
+            } else {
+                showAlert('PDF save uses browser print-to-PDF. Please use Print Preview.');
+            }
+        }
+
+        function printSpineLabels() {
+            const items = getItemsForPreview();
+            if(!items.length) { showAlert('No items to print spine labels for.'); return; }
+            document.getElementById('print-area').innerHTML = items.map(it => `
+                <div class="spine-label-print" style="width:40px; height:220px; border:1px solid #333; display:flex; align-items:center; justify-content:center; padding:8px 2px; writing-mode:vertical-rl; text-orientation:mixed; transform:rotate(180deg); font-family:'Times New Roman',serif; font-size:0.85rem; word-break:break-word; margin:5px;">
+                    ${escapeHtml((it.callnumber || '[no call number]').toUpperCase())}
+                </div>
+            `).join('');
+            window.print();
+        }
+
+        function printBarcodes() {
+            const items = getItemsForPreview();
+            if(!items.length) { showAlert('No items to print barcodes for.'); return; }
+            let html = '<div style="display:flex; flex-wrap:wrap; gap:10px; justify-content:center; padding:20px;">';
+            items.forEach((it, i) => {
+                html += `<div style="border:1px dashed #ccc; padding:10px; text-align:center; width:160px;"><svg id="print-bc-${i}"></svg><div style="font-family:monospace; font-size:0.8rem;">${escapeHtml(it.barcode || '-')}</div></div>`;
+            });
+            html += '</div>';
+            document.getElementById('print-area').innerHTML = html;
+            items.forEach((it, i) => {
+                if(it.barcode) JsBarcode(`#print-bc-${i}`, it.barcode, {format:'CODE128', width:2, height:50, displayValue:false});
+            });
+            window.print();
+        }
+
+        // --- BIBLIO SEARCH MODAL ---
+        function openBiblioSearchModal() {
+            document.getElementById('biblio-search-modal').style.display = 'flex';
+            document.getElementById('biblio-search-input').focus();
+        }
+        function closeBiblioSearchModal() { document.getElementById('biblio-search-modal').style.display = 'none'; }
+        async function runBiblioSearch() {
+            const q = document.getElementById('biblio-search-input').value.trim();
+            const tbody = document.getElementById('biblio-search-results');
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;">Searching...</td></tr>';
+            try {
+                const res = await fetch(`/koha_editor/api/records?page=1&limit=50&filter=all&q_keyword=${encodeURIComponent(q)}&q_callnumber=&sort=barcode&desc=false`);
+                const data = await res.json();
+                if(!data.data || !data.data.length) {
+                    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;">No records found.</td></tr>';
+                    return;
+                }
+                tbody.innerHTML = data.data.map(r => `
+                    <tr>
+                        <td>${r.biblionumber}</td>
+                        <td>${escapeHtml(r.barcode || '-')}</td>
+                        <td>${escapeHtml(r.title || '-')}</td>
+                        <td>${escapeHtml(r.author || '-')}</td>
+                        <td><button class="btn btn-small" onclick="openFullEditorByBiblio(${r.biblionumber}); closeBiblioSearchModal();">Open</button></td>
+                    </tr>
+                `).join('');
+            } catch(e) {
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:red;">Search failed.</td></tr>';
+            }
+        }
+
+        // --- SOURCE MODAL ---
+        let sourceModalPath = '';
+        function openSourceModal() {
+            document.getElementById('source-modal').style.display = 'flex';
+            loadSourceModalFolder('');
+        }
+        function closeSourceModal() { document.getElementById('source-modal').style.display = 'none'; }
+        async function loadSourceModalFolder(path) {
+            sourceModalPath = path;
+            document.getElementById('source-modal-path').textContent = '/' + path;
+            const list = document.getElementById('source-modal-list');
+            list.innerHTML = 'Loading...';
+            try {
+                const res = await fetch(`/koha_editor/api/source/list?path=${encodeURIComponent(path)}`);
+                const data = await res.json();
+                let html = '';
+                if(path) {
+                    const parent = path.split('/').slice(0,-1).join('/');
+                    html += `<div style="padding:6px; cursor:pointer; border-bottom:1px solid #eee;" onclick="loadSourceModalFolder('${parent.replace(/'/g, "\\'")}')">📁 ..</div>`;
+                }
+                data.items.forEach(item => {
+                    const icon = item.is_dir ? '📁' : '📄';
+                    const itemPath = item.path.replace(/'/g, "\\'");
+                    if(item.is_dir) {
+                        html += `<div style="padding:6px; cursor:pointer; border-bottom:1px solid #eee;" onclick="loadSourceModalFolder('${itemPath}')">${icon} ${escapeHtml(item.name)}</div>`;
+                    } else {
+                        html += `<div style="padding:6px; cursor:pointer; border-bottom:1px solid #eee;" onclick="previewSourceModalFile('${itemPath}', '${escapeHtml(item.name)}')">${icon} ${escapeHtml(item.name)}</div>`;
+                    }
+                });
+                list.innerHTML = html;
+            } catch(e) { list.innerHTML = '<p style="color:red">Failed to load.</p>'; }
+        }
+        function sourceModalUp() {
+            const parent = sourceModalPath.split('/').slice(0,-1).join('/');
+            loadSourceModalFolder(parent);
+        }
+        async function previewSourceModalFile(path, name) {
+            const container = document.getElementById('source-modal-preview');
+            const ext = name.split('.').pop().toLowerCase();
+            if(['jpg','jpeg','png','gif'].includes(ext)) {
+                container.innerHTML = `<img src="/koha_editor/api/source/file?path=${encodeURIComponent(path)}" style="max-width:100%; max-height:100%; object-fit:contain;">`;
+            } else if(['txt','json','md','csv','mrc'].includes(ext)) {
+                try {
+                    const res = await fetch(`/koha_editor/api/source/file?path=${encodeURIComponent(path)}`);
+                    const data = await res.json();
+                    container.innerHTML = `<pre style="white-space:pre-wrap; font-size:0.85rem;">${escapeHtml(data.content)}</pre>`;
+                } catch(e) { container.innerHTML = '<p style="color:red">Failed to load.</p>'; }
+            } else {
+                container.innerHTML = '<p style="color:#6b7280;">No preview available.</p>';
+            }
+        }
+        function processSourceModalFolder() {
+            if(!sourceModalPath) { showAlert('Select a folder first.'); return; }
+            showConfirm(`Process folder "${sourceModalPath}" with AI pipeline?`, () => {
+                fetch('/koha_editor/api/source/batch_process', {
+                    method:'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({scope:'folder', path: sourceModalPath, ocr:true, meta:true, mrc:true})
+                });
+                showAlert('Folder processing queued. Check Queue Monitor.');
+                closeSourceModal();
+                switchTab('queue');
+            });
+        }
+
+        // --- IMPORT CSV / EXCEL ---
+        let importRows = [];
+        function openImportModal() {
+            document.getElementById('import-modal').style.display = 'flex';
+        }
+        function closeImportModal() { document.getElementById('import-modal').style.display = 'none'; }
+        async function parseImportFile() {
+            const file = document.getElementById('import-file-input').files[0];
+            if(!file) return;
+            importRows = [];
+            const name = file.name.toLowerCase();
+            document.getElementById('import-preview').innerHTML = '<p style="text-align:center;">Parsing...</p>';
+            if(name.endsWith('.csv')) {
+                const text = await file.text();
+                importRows = parseCsvRows(text);
+            } else {
+                // Excel: send to server for parsing
+                const formData = new FormData();
+                formData.append('file', file);
+                try {
+                    const res = await fetch('/koha_editor/api/import/parse_excel', {method:'POST', body: formData});
+                    const data = await res.json();
+                    if(data.success) importRows = data.rows || [];
+                    else { document.getElementById('import-preview').innerHTML = '<p style="color:red">'+escapeHtml(data.error)+'</p>'; return; }
+                } catch(e) { document.getElementById('import-preview').innerHTML = '<p style="color:red">Excel parse failed.</p>'; return; }
+            }
+            renderImportPreview();
+        }
+        function parseCsvRows(text) {
+            const lines = text.split(/\r?\n/).filter(l => l.trim());
+            if(lines.length < 2) return [];
+            const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g,''));
+            return lines.slice(1).map(line => {
+                const vals = line.split(',').map(v => v.trim().replace(/^"|"$/g,''));
+                const row = {};
+                headers.forEach((h,i) => row[h] = vals[i] || '');
+                return row;
+            });
+        }
+        function renderImportPreview() {
+            const container = document.getElementById('import-preview');
+            if(!importRows.length) { container.innerHTML = '<p style="text-align:center;">No rows found.</p>'; return; }
+            const keys = Object.keys(importRows[0]);
+            let html = `<div style="margin-bottom:10px; font-weight:bold;">${importRows.length} rows parsed</div>`;
+            html += '<div class="import-grid">';
+            importRows.slice(0, 20).forEach((row, idx) => {
+                html += `<div class="import-row" id="import-row-${idx}">`;
+                keys.forEach(k => {
+                    html += `<div style="font-size:0.8rem; margin-bottom:4px;"><b>${escapeHtml(k)}:</b> ${escapeHtml(row[k] || '')}</div>`;
+                });
+                html += '</div>';
+            });
+            if(importRows.length > 20) html += `<div style="grid-column:1/-1; text-align:center; color:#6b7280;">... and ${importRows.length - 20} more rows</div>`;
+            html += '</div>';
+            container.innerHTML = html;
+            document.getElementById('btn-process-import').disabled = false;
+        }
+        async function processImportRows() {
+            if(!importRows.length) return;
+            const btn = document.getElementById('btn-process-import');
+            btn.disabled = true; btn.textContent = 'Processing...';
+            try {
+                const res = await fetch('/koha_editor/api/import/process', {
+                    method:'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({
+                        rows: importRows,
+                        ai_model: document.getElementById('import-ai-model').value,
+                        strategy: document.getElementById('import-strategy').value
+                    })
+                });
+                const data = await res.json();
+                if(data.success) {
+                    showAlert(`Import processing started. ${data.queued || 0} rows queued.`);
+                    closeImportModal();
+                    switchTab('queue');
+                } else {
+                    showAlert('Error: ' + (data.error || 'Failed'));
+                }
+            } catch(e) { showAlert('Request failed: ' + e); }
+            finally { btn.disabled = false; btn.textContent = '🤖 Process with AI'; }
+        }
+
+</script>
 
     <!-- QUEUE LOG MODAL -->
     <div id="queueLogModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center;">
@@ -2418,6 +3116,87 @@ async function submitBatchFix() {
             </div>
         </div>
     </div>
+
+
+        <!-- Biblio Search Modal -->
+        <div id="biblio-search-modal" class="modal" style="display:none;">
+            <div class="modal-content" style="max-width: 900px;">
+                <span class="close" onclick="closeBiblioSearchModal()">&times;</span>
+                <h3>🔍 Search / Select Biblio or Barcode</h3>
+                <div style="display:flex; gap:10px; margin:15px 0;">
+                    <input type="text" id="biblio-search-input" placeholder="Biblio #, barcode, title, author..." style="flex:1;" onkeydown="if(event.key==='Enter') runBiblioSearch()">
+                    <button class="btn" onclick="runBiblioSearch()">Search</button>
+                </div>
+                <div class="table-container" style="max-height: 50vh; overflow-y:auto;">
+                    <table>
+                        <thead>
+                            <tr><th>Biblio #</th><th>Barcode</th><th>Title</th><th>Author</th><th>Action</th></tr>
+                        </thead>
+                        <tbody id="biblio-search-results">
+                            <tr><td colspan="5" style="text-align:center;">Type above and click Search</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Source Folder Modal -->
+        <div id="source-modal" class="modal" style="display:none;">
+            <div class="modal-content" style="max-width: 1000px; width: 95%;">
+                <span class="close" onclick="closeSourceModal()">&times;</span>
+                <h3>📁 Related Source Folder</h3>
+                <p id="source-modal-path" style="font-family:monospace; color:#6b7280; margin-bottom:10px;">/</p>
+                <div class="source-modal-browser">
+                    <div class="source-modal-list" id="source-modal-list">Loading...</div>
+                    <div class="source-modal-preview" id="source-modal-preview">
+                        <p style="color:#6b7280;">Select a file to preview</p>
+                    </div>
+                </div>
+                <div style="display:flex; justify-content: space-between; margin-top:15px;">
+                    <div>
+                        <button class="btn btn-small btn-outline" onclick="sourceModalUp()">⬆ Up</button>
+                        <button class="btn btn-small btn-outline" onclick="loadSourceModalFolder('')">🏠 Root</button>
+                    </div>
+                    <button class="btn btn-small" onclick="processSourceModalFolder()">⚡ Process This Folder</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- CSV/Excel Import Modal -->
+        <div id="import-modal" class="modal" style="display:none;">
+            <div class="modal-content" style="max-width: 1100px; width: 95%;">
+                <span class="close" onclick="closeImportModal()">&times;</span>
+                <h3>📥 Import CSV / Excel with AI</h3>
+                <div style="display:flex; gap:10px; align-items:flex-end; margin:15px 0; flex-wrap:wrap;">
+                    <div>
+                        <label style="display:block; font-size:0.85rem; font-weight:bold; margin-bottom:4px;">File (CSV, XLSX, XLS)</label>
+                        <input type="file" id="import-file-input" accept=".csv,.xlsx,.xls" onchange="parseImportFile()">
+                    </div>
+                    <div>
+                        <label style="display:block; font-size:0.85rem; font-weight:bold; margin-bottom:4px;">AI Engine</label>
+                        <select id="import-ai-model" style="padding:8px;">
+                            <option value="auto">Auto</option>
+                            <option value="gemini">Gemini</option>
+                            <option value="local">Local AI</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label style="display:block; font-size:0.85rem; font-weight:bold; margin-bottom:4px;">Strategy</label>
+                        <select id="import-strategy" style="padding:8px;">
+                            <option value="enrich">Enrich Existing</option>
+                            <option value="create">Create New Records</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-small" id="btn-process-import" onclick="processImportRows()" disabled>🤖 Process with AI</button>
+                </div>
+                <div id="import-preview" style="margin-top:10px;">
+                    <p style="color:#6b7280; text-align:center;">Select a CSV or Excel file to preview rows.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Print Area -->
+        <div id="print-area" style="display:none;"></div>
 
 </body>
 </html>
