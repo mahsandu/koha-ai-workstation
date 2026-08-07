@@ -3051,32 +3051,64 @@ async function submitBatchFix() {
             importRows = [];
             const name = file.name.toLowerCase();
             document.getElementById('import-preview').innerHTML = '<p style="text-align:center;">Parsing...</p>';
-            if(name.endsWith('.csv')) {
-                const text = await file.text();
-                importRows = parseCsvRows(text);
-            } else {
-                // Excel: send to server for parsing
-                const formData = new FormData();
-                formData.append('file', file);
-                try {
+            document.getElementById('btn-process-import').disabled = true;
+
+            if(name.endsWith('.mrc') || name.endsWith('.mrk')) {
+                document.getElementById('import-preview').innerHTML = '<p style="color:#b45309; text-align:center;">MARC files (.mrc / .mrk) should be opened in the MARC Editor or Sources tab, not imported as rows. Please convert to CSV/Excel first or use the editor.</p>';
+                return;
+            }
+
+            try {
+                if(name.endsWith('.csv')) {
+                    const text = await file.text();
+                    importRows = parseDelimitedRows(text, ',');
+                } else if(name.endsWith('.tsv') || name.endsWith('.txt')) {
+                    const text = await file.text();
+                    importRows = parseDelimitedRows(text, '\t');
+                    if(!importRows.length && text.includes(',')) importRows = parseDelimitedRows(text, ',');
+                } else if(name.endsWith('.json')) {
+                    const text = await file.text();
+                    importRows = parseJsonRows(text);
+                } else {
+                    // Excel and other spreadsheet formats: send to server for parsing
+                    const formData = new FormData();
+                    formData.append('file', file);
                     const res = await fetch('/koha_editor/api/import/parse_excel', {method:'POST', body: formData});
                     const data = await res.json();
                     if(data.success) importRows = data.rows || [];
                     else { document.getElementById('import-preview').innerHTML = '<p style="color:red">'+escapeHtml(data.error)+'</p>'; return; }
-                } catch(e) { document.getElementById('import-preview').innerHTML = '<p style="color:red">Excel parse failed.</p>'; return; }
+                }
+            } catch(e) {
+                document.getElementById('import-preview').innerHTML = '<p style="color:red">Parse failed: '+escapeHtml(String(e))+'</p>';
+                return;
             }
             renderImportPreview();
         }
-        function parseCsvRows(text) {
+        function parseDelimitedRows(text, delimiter) {
             const lines = text.split(/\r?\n/).filter(l => l.trim());
             if(lines.length < 2) return [];
-            const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g,''));
+            const splitRegex = delimiter === '\t' ? /\t/ : /,(?=(?:[^"]*"[^"]*")*[^"]*$)/;
+            const headers = lines[0].split(splitRegex).map(h => h.trim().replace(/^"|"$/g,''));
             return lines.slice(1).map(line => {
-                const vals = line.split(',').map(v => v.trim().replace(/^"|"$/g,''));
+                const vals = line.split(splitRegex).map(v => v.trim().replace(/^"|"$/g,''));
                 const row = {};
                 headers.forEach((h,i) => row[h] = vals[i] || '');
                 return row;
-            });
+            }).filter(r => Object.values(r).some(v => v !== ''));
+        }
+        function parseJsonRows(text) {
+            let data;
+            try {
+                data = JSON.parse(text);
+            } catch(e) {
+                // Try newline-delimited JSON
+                data = text.split(/\r?\n/).filter(l => l.trim()).map(l => JSON.parse(l));
+            }
+            if(!Array.isArray(data)) {
+                if(data && typeof data === 'object') return [data];
+                return [];
+            }
+            return data.filter(r => r && typeof r === 'object');
         }
         function renderImportPreview() {
             const container = document.getElementById('import-preview');
@@ -3099,7 +3131,11 @@ async function submitBatchFix() {
         async function processImportRows() {
             if(!importRows.length) return;
             const btn = document.getElementById('btn-process-import');
-            btn.disabled = true; btn.textContent = 'Processing...';
+            const originalText = btn.innerText;
+            btn.disabled = true;
+            btn.innerText = 'Submitting...';
+            document.getElementById('import-preview').innerHTML = '<p style="text-align:center; color:#2563eb;">Submitting rows to AI queue...</p>';
+
             try {
                 const res = await fetch('/koha_editor/api/import/process', {
                     method:'POST', headers:{'Content-Type':'application/json'},
@@ -3109,16 +3145,34 @@ async function submitBatchFix() {
                         strategy: document.getElementById('import-strategy').value
                     })
                 });
-                const data = await res.json();
-                if(data.success) {
-                    showAlert(`Import processing started. ${data.queued || 0} rows queued.`);
+                let data = {};
+                try { data = await res.json(); } catch(e) {}
+                if(res.ok && data.success) {
+                    // Reset UI for next use
+                    importRows = [];
+                    document.getElementById('import-file-input').value = '';
+                    btn.disabled = true;
+                    btn.innerText = '🤖 Process with AI';
+                    document.getElementById('import-preview').innerHTML = '<p style="color:#6b7280; text-align:center;">Select a CSV or Excel file to preview rows.</p>';
                     closeImportModal();
-                    switchTab('queue');
+                    // Show confirmation then jump to queue monitor
+                    openAppModal(
+                        'Processing Started',
+                        `<p style="text-align:center; font-size:1.1rem;">🚀 <b>${data.queued || 0}</b> row(s) queued for AI processing.</p><p style="text-align:center; color:#6b7280;">You can track progress in the Queue Monitor.</p>`,
+                        () => { switchTab('queue'); },
+                        'Open Queue Monitor',
+                        false
+                    );
                 } else {
-                    showAlert('Error: ' + (data.error || 'Failed'));
+                    document.getElementById('import-preview').innerHTML = '<p style="color:red; text-align:center;">Error: ' + escapeHtml(data.error || 'Failed to queue rows') + '</p>';
+                    btn.disabled = false;
+                    btn.innerText = originalText;
                 }
-            } catch(e) { showAlert('Request failed: ' + e); }
-            finally { btn.disabled = false; btn.textContent = '🤖 Process with AI'; }
+            } catch(e) {
+                document.getElementById('import-preview').innerHTML = '<p style="color:red; text-align:center;">Request failed: ' + escapeHtml(String(e)) + '</p>';
+                btn.disabled = false;
+                btn.innerText = originalText;
+            }
         }
 
 </script>
@@ -3210,7 +3264,7 @@ async function submitBatchFix() {
                 <div style="display:flex; gap:10px; align-items:flex-end; margin:15px 0; flex-wrap:wrap;">
                     <div>
                         <label style="display:block; font-size:0.85rem; font-weight:bold; margin-bottom:4px;">File (CSV, XLSX, XLS)</label>
-                        <input type="file" id="import-file-input" accept=".csv,.xlsx,.xls" onchange="parseImportFile()">
+                        <input type="file" id="import-file-input" accept=".csv,.tsv,.txt,.json,.xlsx,.xls,.xlsm,.ods" onchange="parseImportFile()">
                     </div>
                     <div>
                         <label style="display:block; font-size:0.85rem; font-weight:bold; margin-bottom:4px;">AI Engine</label>
