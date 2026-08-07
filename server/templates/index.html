@@ -291,6 +291,9 @@
             <div class="nav-tab" onclick="switchTab('queue')">
                 <span style="margin-right:8px;">⚡</span> Queue Monitor
             </div>
+            <div class="nav-tab" onclick="switchTab('processing')">
+                <span style="margin-right:8px;">🪵</span> Processing Log
+            </div>
             <div class="nav-tab" onclick="switchTab('settings')">
                 <span style="margin-right:8px;">⚙️</span> Settings
             </div>
@@ -743,7 +746,7 @@
                             </tr>
                         </thead>
                         <tbody id="queue-body">
-                            <tr><td colspan="5" style="text-align:center;">Loading tasks...</td></tr>
+                            <tr><td colspan="6" style="text-align:center;">Loading tasks...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -755,7 +758,25 @@
                 </div>
             </div>
         </div>
-        
+
+        <!-- PROCESSING LOG PAGE -->
+        <div id="tab-processing" class="tab-content">
+            <div class="editor-top-nav" style="margin-bottom: 20px;">
+                <div>
+                    <button class="btn btn-outline" onclick="switchTab('queue')">← Back to Queue</button>
+                </div>
+                <div class="editor-title" id="processing-title">Processing Log</div>
+                <div>
+                    <button class="btn btn-outline" onclick="refreshProcessingPage()">↻ Refresh</button>
+                </div>
+            </div>
+            <div class="panel">
+                <div id="processing-content" style="min-height: 60vh;">
+                    <p style="text-align:center; color:#6b7280;">No task selected. Open a task from the editor or queue.</p>
+                </div>
+            </div>
+        </div>
+
         <!-- Generic App Modal -->
         <div id="app-modal" class="modal" style="display:none;">
             <div class="modal-content">
@@ -808,6 +829,17 @@
             if(tab === 'dashboard') loadDashboardStats();
             if(tab === 'sources') loadSourceFolder();
             if(tab === 'settings') loadSettings();
+            if(tab === 'processing') renderProcessingPage();
+
+            // Manage processing page live refresh
+            if(processingInterval) { clearInterval(processingInterval); processingInterval = null; }
+            if(tab === 'processing' && liveTaskId) {
+                processingInterval = setInterval(() => {
+                    if(document.getElementById('tab-processing').classList.contains('active')) {
+                        renderProcessingPage();
+                    }
+                }, 3000);
+            }
         }
         
         window.addEventListener('popstate', () => {
@@ -832,6 +864,9 @@
             } else if(tab.startsWith('queue#task=')) {
                 taskIdToLoad = tab.split('=')[1];
                 tab = 'queue';
+            } else if(tab.startsWith('processing/')) {
+                taskIdToLoad = tab.split('/')[1];
+                tab = 'processing';
             }
             
             const page = parseInt(url.searchParams.get('page')) || 1;
@@ -851,14 +886,15 @@
                 openFullEditorByBiblio(biblioIdToLoad);
             }
             if(tab === 'queue' && taskIdToLoad) {
-                setTimeout(() => { 
-                    if(queueData[taskIdToLoad]) {
-                        viewTaskDetails(taskIdToLoad); 
-                    } else {
-                        // If not on current page, we might need to fetch it specifically, but for now just fallback
-                        console.log("Task not in current queue view");
-                    }
+                setTimeout(() => {
+                    viewTaskDetails(taskIdToLoad);
                 }, 800);
+            }
+            if(tab === 'processing' && taskIdToLoad) {
+                setTimeout(() => {
+                    liveTaskId = taskIdToLoad;
+                    renderProcessingPage();
+                }, 300);
             }
         }
 
@@ -1506,21 +1542,24 @@
             }
             
             queueData = {};
-            
-            tbody.innerHTML = data.data.map(task => {
+
+            // Sort by display_id descending (most recent numeric first)
+            const sorted = data.data.slice().sort((a, b) => (b.display_id || 0) - (a.display_id || 0));
+            tbody.innerHTML = sorted.map(task => {
                 queueData[task.task_id] = task;
-                let source = task.type === 'db_fix' ? `DB Fix` : `Upload`;
-                let timeStr = new Date(task.created_at).toLocaleString();
-                
+                let source = task.type === 'db_fix' ? `DB Fix` : (task.type || 'Upload');
+                let timeStr = toBDTime(task.created_at);
+
                 return `
-                <tr>
-                    <td style="font-size:0.8rem; font-family:monospace;"><a href="#queue#task=${task.task_id}" style="color:var(--primary); text-decoration:none; font-weight:bold;">${task.task_id.substring(0,13)}...</a></td>
+                <tr style="cursor:pointer;" onclick="viewTaskDetails('${task.task_id}')">
+                    <td style="font-size:0.9rem; font-family:monospace; text-align:center;"><span style="color:var(--primary); font-weight:bold;">${task.display_id || task.task_id}</span></td>
                     <td style="font-size:0.85rem;">${timeStr}</td>
                     <td style="font-weight:bold;">${task.biblionumber || '-'}</td>
                     <td>${source}</td>
                     <td><span class="status-badge status-${task.status}">${task.status}</span></td>
-                    <td>
-                        <button class="btn btn-small btn-outline" style="padding: 2px 5px;" onclick="viewTaskDetails('${task.task_id}')">📄 View Details</button>
+                    <td onclick="event.stopPropagation();">
+                        <button class="btn btn-small btn-outline" style="padding: 2px 5px;" onclick="viewTaskDetails('${task.task_id}')">📄 Details</button>
+                        <button class="btn btn-small btn-outline" style="padding: 2px 5px; margin-left:5px;" onclick="openProcessingPage('${task.task_id}')">🪵 Log</button>
                         ${task.status === 'error' || task.status === 'completed' ? `<button class="btn btn-small btn-outline" style="margin-left:5px; padding: 2px 5px;" onclick="requeueTask('${task.task_id}')">↺ Requeue</button>` : ''}
                     </td>
                 </tr>
@@ -1532,33 +1571,235 @@
             }
         }
         
-        function viewTaskDetails(taskId) {
-            const task = queueData[taskId];
+        let liveTaskId = null;
+        let liveTaskInterval = null;
+        let processingInterval = null;
+
+        function _setTaskImageLinks(task) {
+            const imgRow = document.getElementById('modal-task-image-row');
+            const outRow = document.getElementById('modal-task-output-row');
+            const origRow = document.getElementById('modal-task-original-row');
+            const preview = document.getElementById('modal-task-preview');
+            const previewImg = document.getElementById('modal-task-preview-img');
+
+            let filePath = task.images || '';
+            if(!filePath && typeof task.result_data === 'string') {
+                try { const rd = JSON.parse(task.result_data); filePath = rd.output || rd.file || rd.ocr_file || rd.meta_file || rd.mrc_file || ''; } catch(e){}
+            }
+
+            const isImage = filePath && /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(filePath);
+            if(!filePath) {
+                imgRow.style.display = 'none'; outRow.style.display = 'none'; origRow.style.display = 'none'; preview.style.display = 'none';
+                return;
+            }
+
+            imgRow.style.display = '';
+            document.getElementById('modal-task-image-path').textContent = filePath;
+
+            // Convert server path to web URL for preview
+            let webUrl = null;
+            if(filePath.startsWith('/home/koha_sources/')) {
+                webUrl = '/koha_editor/api/source/file?path=' + encodeURIComponent(filePath.replace('/home/koha_sources/', '')) + '&raw=1';
+            } else if(filePath.startsWith('/var/www/koha_editor/images/')) {
+                webUrl = '/koha_editor/images/' + encodeURIComponent(filePath.replace('/var/www/koha_editor/images/', ''));
+            }
+
+            if(isImage && webUrl) {
+                preview.style.display = '';
+                previewImg.src = webUrl;
+            } else {
+                preview.style.display = 'none';
+            }
+
+            // Output link
+            if(task.status === 'completed' && task.result_data) {
+                try {
+                    const rd = JSON.parse(task.result_data);
+                    const outPath = rd.output || rd.file || '';
+                    if(outPath) {
+                        outRow.style.display = '';
+                        const outLink = document.getElementById('modal-task-output-link');
+                        outLink.textContent = outPath;
+                        let outUrl = '#';
+                        if(outPath.startsWith('/home/koha_sources/')) outUrl = '/koha_editor/api/source/file?path=' + encodeURIComponent(outPath.replace('/home/koha_sources/', '')) + '&raw=1';
+                        else if(outPath.startsWith('/var/www/koha_editor/images/')) outUrl = '/koha_editor/images/' + encodeURIComponent(outPath.replace('/var/www/koha_editor/images/', ''));
+                        outLink.href = outUrl;
+                    } else { outRow.style.display = 'none'; }
+                } catch(e) { outRow.style.display = 'none'; }
+            } else { outRow.style.display = 'none'; }
+
+            // Original link
+            const base = filePath.replace(/\.[^.]+$/, '');
+            const ext = filePath.match(/\.[^.]+$/) ? filePath.match(/\.[^.]+$/)[0] : '';
+            const originalPath = base + '_original' + ext;
+            if(originalPath) {
+                origRow.style.display = '';
+                const origLink = document.getElementById('modal-task-original-link');
+                origLink.textContent = originalPath;
+                let origUrl = '#';
+                if(originalPath.startsWith('/home/koha_sources/')) origUrl = '/koha_editor/api/source/file?path=' + encodeURIComponent(originalPath.replace('/home/koha_sources/', '')) + '&raw=1';
+                else if(originalPath.startsWith('/var/www/koha_editor/images/')) origUrl = '/koha_editor/images/' + encodeURIComponent(originalPath.replace('/var/www/koha_editor/images/', ''));
+                origLink.href = origUrl;
+            }
+        }
+
+        function toBDTime(isoOrDbString) {
+            if(!isoOrDbString) return '-';
+            const d = new Date(isoOrDbString.replace(' ', 'T') + 'Z');
+            if(isNaN(d)) return isoOrDbString;
+            return d.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka', hour12: true });
+        }
+
+        function _renderTaskImageLinks(task) {
+            _setTaskImageLinks(task);
+        }
+
+        function _renderProcessingLog(logEntries) {
+            const container = document.getElementById('modal-processing-log');
+            if(!container) return;
+            if(!logEntries || logEntries.length === 0) {
+                container.innerHTML = '<em style="color:#94a3b8;">Waiting for logs...</em>';
+                return;
+            }
+            container.innerHTML = logEntries.map(entry => {
+                const ts = toBDTime(entry.ts);
+                const color = entry.level === 'error' ? '#f87171' : (entry.level === 'warning' ? '#fbbf24' : '#4ade80');
+                return `<div style="margin-bottom:4px; border-bottom:1px solid #1e293b; padding-bottom:2px;"><span style="color:#94a3b8; font-size:0.7rem;">[${ts}]</span> <span style="color:${color}; font-weight:bold; font-size:0.75rem;">${entry.level.toUpperCase()}</span> <span>${escapeHtml(entry.message)}</span></div>`;
+            }).join('');
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function escapeHtml(text) {
+            if(text == null) return '';
+            return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        async function fetchTaskDetails(taskId) {
+            try {
+                const res = await fetch(`/koha_editor/api/queue/task/${taskId}`);
+                const data = await res.json();
+                if(data.success) return data.task;
+                return null;
+            } catch(e) {
+                console.error("fetchTaskDetails failed", e);
+                return null;
+            }
+        }
+
+        async function refreshTaskDetails(taskId) {
+            const task = await fetchTaskDetails(taskId);
             if(!task) return;
-            
-            document.getElementById('modal-task-id').textContent = task.task_id;
+            // Also update queueData cache
+            queueData[taskId] = task;
+
             document.getElementById('modal-task-status').textContent = task.status;
-            document.getElementById('modal-task-time').textContent = new Date(task.created_at).toLocaleString();
-            
-            let configJson = {};
-            let resultJson = {};
-            try { configJson = typeof task.task_config === 'string' && task.task_config.trim() ? JSON.parse(task.task_config) : task.task_config || {}; } catch(e) { configJson = {"raw": task.task_config}; }
-            try { resultJson = typeof task.result_data === 'string' && task.result_data.trim() ? JSON.parse(task.result_data) : task.result_data || {}; } catch(e) { resultJson = {"raw": task.result_data}; }
-            
+            const indicator = document.getElementById('live-indicator');
+            if(indicator) indicator.style.display = (task.status === 'processing' || task.status === 'pending') ? 'inline' : 'none';
+            _setTaskImageLinks(task);
+            _renderProcessingLog(task.processing_log);
+            let resultJson = task.result_data || {};
             if (task.status === 'processing') {
-                resultJson = {"live_status": "Task is currently running on the server... Check back later or view Server Logs."};
+                resultJson = {"live_status": "Task is currently running on the server...", "latest": toBDTime(new Date().toISOString()), ...(resultJson && typeof resultJson === 'object' ? resultJson : {})};
             } else if (task.status === 'pending') {
                 resultJson = {"live_status": "Waiting for an available AI worker..."};
             }
-            
             document.getElementById('modal-task-log').value = JSON.stringify(resultJson, null, 2);
-            document.getElementById('modal-task-config').textContent = JSON.stringify(configJson, null, 2);
-            
-            document.getElementById('queueLogModal').style.display = 'flex';
         }
-        
+
+        async function viewTaskDetails(taskId) {
+            liveTaskId = taskId;
+            if(liveTaskInterval) clearInterval(liveTaskInterval);
+
+            const task = await fetchTaskDetails(taskId);
+            if(!task) {
+                alert("Task not found");
+                return;
+            }
+            queueData[taskId] = task;
+
+            document.getElementById('modal-task-id').textContent = `#${task.display_id || task.task_id} (${task.task_id})`;
+            document.getElementById('modal-task-status').textContent = task.status;
+            document.getElementById('modal-task-time').textContent = toBDTime(task.created_at);
+
+            let configJson = {};
+            try { configJson = typeof task.task_config === 'string' && task.task_config.trim() ? JSON.parse(task.task_config) : task.task_config || {}; } catch(e) { configJson = {"raw": task.task_config}; }
+            document.getElementById('modal-task-config').textContent = JSON.stringify(configJson, null, 2);
+
+            await refreshTaskDetails(taskId);
+            document.getElementById('queueLogModal').style.display = 'flex';
+            const indicator = document.getElementById('live-indicator');
+            if(indicator) indicator.style.display = (task.status === 'processing' || task.status === 'pending') ? 'inline' : 'none';
+
+            liveTaskInterval = setInterval(async () => {
+                if(document.getElementById('queueLogModal').style.display === 'none') {
+                    clearInterval(liveTaskInterval);
+                    liveTaskInterval = null;
+                    liveTaskId = null;
+                    return;
+                }
+                await refreshTaskDetails(liveTaskId);
+            }, 3000);
+        }
+
         function closeLogModal() {
-            document.getElementById('log-modal').style.display = 'none';
+            if(liveTaskInterval) clearInterval(liveTaskInterval);
+            liveTaskInterval = null;
+            liveTaskId = null;
+            document.getElementById('queueLogModal').style.display = 'none';
+        }
+
+        function openProcessingPage(taskId) {
+            liveTaskId = taskId;
+            const url = new URL(window.location);
+            url.hash = `processing/${taskId}`;
+            window.history.pushState({}, '', url);
+            switchTab('processing', false);
+            renderProcessingPage();
+        }
+
+        async function renderProcessingPage() {
+            const container = document.getElementById('processing-content');
+            if(!liveTaskId) {
+                document.getElementById('processing-title').textContent = 'Processing Log';
+                container.innerHTML = '<p style="text-align:center; color:#6b7280;">No task selected. Open a task from the editor or queue.</p>';
+                return;
+            }
+            const task = await fetchTaskDetails(liveTaskId);
+            if(!task) {
+                container.innerHTML = '<p style="text-align:center; color:#ef4444;">Task not found.</p>';
+                return;
+            }
+            queueData[liveTaskId] = task;
+            document.getElementById('processing-title').textContent = `Processing Log: Task #${task.display_id || task.task_id}`;
+
+            const configJson = task.task_config || {};
+            const logHtml = (task.processing_log || []).map(entry => {
+                const ts = toBDTime(entry.ts);
+                const color = entry.level === 'error' ? '#f87171' : (entry.level === 'warning' ? '#fbbf24' : '#4ade80');
+                return `<div style="margin-bottom:6px; border-bottom:1px solid #e2e8f0; padding-bottom:4px; font-family:monospace; font-size:0.85rem;"><span style="color:#64748b;">[${ts}]</span> <span style="color:${color}; font-weight:bold;">${entry.level.toUpperCase()}</span> <span>${escapeHtml(entry.message)}</span></div>`;
+            }).join('') || '<em style="color:#94a3b8;">Waiting for logs...</em>';
+
+            container.innerHTML = `
+                <div style="margin-bottom: 15px;">
+                    <p><strong>Task ID:</strong> ${task.task_id} <strong>Display:</strong> #${task.display_id || '-'}</p>
+                    <p><strong>Status:</strong> <span class="status-badge status-${task.status}">${task.status}</span></p>
+                    <p><strong>Biblio #:</strong> ${task.biblionumber || '-'} | <strong>Type:</strong> ${task.type === 'db_fix' ? 'DB Fix' : (task.type || 'Upload')}</p>
+                    <p><strong>Created:</strong> ${toBDTime(task.created_at)} ${task.completed_at ? '| <strong>Completed:</strong> ' + toBDTime(task.completed_at) : ''}</p>
+                    <p><strong>Config:</strong> <code>${escapeHtml(JSON.stringify(configJson))}</code></p>
+                </div>
+                <div style="background:#0f172a; color:#e2e8f0; padding:15px; border-radius:8px; min-height:300px; max-height:60vh; overflow-y:auto;">
+                    ${logHtml}
+                </div>
+                <div style="margin-top:15px;">
+                    <h4>Result Data</h4>
+                    <pre style="background:#f1f5f9; padding:10px; border-radius:4px; overflow-x:auto;">${escapeHtml(JSON.stringify(task.result_data || {}, null, 2))}</pre>
+                </div>
+            `;
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function refreshProcessingPage() {
+            renderProcessingPage();
         }
 
         // --- BROWSER STATS & DATA ---
@@ -1729,10 +1970,37 @@ async function submitBatchFix() {
                 body: JSON.stringify({ biblionumbers: [biblionumber], fix_type: 'auto', ai_model: ai_model })
             });
             const data = await res.json();
-            if(data.success) {
-                alert("Sent to AI Queue! Check Queue tab for progress.");
-                switchTab('queue');
-            } else alert("Failed to queue item");
+            if(data.success && data.task_ids && data.task_ids.length > 0) {
+                await fetchQueueStatus();
+                viewTaskDetails(data.task_ids[0]);
+            } else {
+                alert(data.error || "Failed to queue item");
+            }
+        }
+
+        async function applyAACR2() {
+            // Apply local AACR2 punctuation rules immediately for UI feedback
+            let f245 = currentMarcFields.find(f => f.tag === '245');
+            if (f245 && f245.subfields) { let sfa = f245.subfields.find(s => s.code === 'a'); let sfb = f245.subfields.find(s => s.code === 'b'); let sfc = f245.subfields.find(s => s.code === 'c'); if (sfa && sfb) { let val = sfa.value.trim(); if (!val.endsWith(':') && !val.endsWith('/')) sfa.value = val + ' :'; } if (sfc) { let target = sfb || sfa; if (target) { let val = target.value.trim(); if (!val.endsWith('/')) target.value = val + ' /'; } } }
+            let f300 = currentMarcFields.find(f => f.tag === '300');
+            if (f300 && f300.subfields) { let sfa = f300.subfields.find(s => s.code === 'a'); let sfc = f300.subfields.find(s => s.code === 'c'); if (sfa) { let val = sfa.value.trim(); if(/^\d+$/.test(val)) sfa.value = val + ' p.'; else if (val.endsWith('p')) sfa.value = val + '.'; } if (sfc) { let val = sfc.value.trim(); if(/^\d+$/.test(val)) sfc.value = val + ' cm.'; else if (val.endsWith('cm')) sfc.value = val + '.'; } }
+            renderMarcEditor();
+
+            // Queue a background AI task to apply AACR2 rules to the database record
+            const biblionumber = cachedRecords[currentBiblioIndex].biblionumber;
+            const ai_model = document.getElementById('editor-ai-model').value;
+            const res = await fetch('/koha_editor/api/queue/batch', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ biblionumbers: [biblionumber], fix_type: 'aacr2', ai_model: ai_model })
+            });
+            const data = await res.json();
+            if(data.success && data.task_ids && data.task_ids.length > 0) {
+                await fetchQueueStatus();
+                viewTaskDetails(data.task_ids[0]);
+            } else {
+                alert(data.error || "Failed to queue AACR2 task");
+            }
         }
         function loadNextRecord(offset) { const nextIdx = currentBiblioIndex + offset; if(nextIdx >= 0 && nextIdx < cachedRecords.length) openFullEditor(nextIdx); else alert("End of list!"); }
         
@@ -1764,13 +2032,6 @@ async function submitBatchFix() {
         function removeField(fIdx) { if(confirm("Delete this field?")) { currentMarcFields.splice(fIdx, 1); renderMarcEditor(); } }
         function removeSubfield(fIdx, sIdx) { currentMarcFields[fIdx].subfields.splice(sIdx, 1); renderMarcEditor(); }
         function duplicateField(fIdx) { let copy = JSON.parse(JSON.stringify(currentMarcFields[fIdx])); currentMarcFields.splice(fIdx + 1, 0, copy); renderMarcEditor(); }
-        function applyAACR2() {
-            let f245 = currentMarcFields.find(f => f.tag === '245');
-            if (f245 && f245.subfields) { let sfa = f245.subfields.find(s => s.code === 'a'); let sfb = f245.subfields.find(s => s.code === 'b'); let sfc = f245.subfields.find(s => s.code === 'c'); if (sfa && sfb) { let val = sfa.value.trim(); if (!val.endsWith(':') && !val.endsWith('/')) sfa.value = val + ' :'; } if (sfc) { let target = sfb || sfa; if (target) { let val = target.value.trim(); if (!val.endsWith('/')) target.value = val + ' /'; } } }
-            let f300 = currentMarcFields.find(f => f.tag === '300');
-            if (f300 && f300.subfields) { let sfa = f300.subfields.find(s => s.code === 'a'); let sfc = f300.subfields.find(s => s.code === 'c'); if (sfa) { let val = sfa.value.trim(); if (/^\d+$/.test(val)) sfa.value = val + ' p.'; else if (val.endsWith('p')) sfa.value = val + '.'; } if (sfc) { let val = sfc.value.trim(); if (/^\d+$/.test(val)) sfc.value = val + ' cm.'; else if (val.endsWith('cm')) sfc.value = val + '.'; } }
-            renderMarcEditor(); alert("AACR2 Rules Applied!");
-        }
 
         async function saveFullRecord() {
             const biblio = cachedRecords[currentBiblioIndex];
@@ -2126,18 +2387,31 @@ async function submitBatchFix() {
 
     <!-- QUEUE LOG MODAL -->
     <div id="queueLogModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center;">
-        <div style="background:white; width: 80%; max-width: 800px; max-height: 80vh; border-radius: 8px; display:flex; flex-direction:column; overflow:hidden;">
+        <div style="background:white; width: 85%; max-width: 900px; max-height: 85vh; border-radius: 8px; display:flex; flex-direction:column; overflow:hidden;">
             <div style="padding:15px; border-bottom:1px solid #ddd; display:flex; justify-content:space-between; align-items:center; background:#f9fafb;">
-                <h3 style="margin:0; color:var(--primary);">Task Details</h3>
-                <button class="btn btn-outline btn-small" onclick="document.getElementById('queueLogModal').style.display='none'">Close</button>
+                <h3 style="margin:0; color:var(--primary);">Task Details <span id="live-indicator" style="display:none; font-size:0.75rem; color:#22c55e; margin-left:10px;">● LIVE</span></h3>
+                <div style="display:flex; gap:8px;">
+                    <button class="btn btn-outline btn-small" onclick="openProcessingPage(liveTaskId)">🪵 Full Log Page</button>
+                    <button class="btn btn-outline btn-small" onclick="closeLogModal()">Close</button>
+                </div>
             </div>
             <div style="padding:15px; overflow-y:auto; flex:1;">
                 <p><strong>Task ID:</strong> <span id="modal-task-id"></span></p>
                 <p><strong>Status:</strong> <span id="modal-task-status"></span></p>
-                <p><strong>Timestamp:</strong> <span id="modal-task-time"></span></p>
+                <p><strong>Created:</strong> <span id="modal-task-time"></span> <span style="color:#6b7280; font-size:0.8rem;">(Asia/Dhaka)</span></p>
+                <p id="modal-task-image-row" style="display:none;"><strong>Source File:</strong> <span id="modal-task-image-path"></span></p>
+                <p id="modal-task-output-row" style="display:none;"><strong>Output File:</strong> <a id="modal-task-output-link" href="#" target="_blank"></a></p>
+                <p id="modal-task-original-row" style="display:none;"><strong>Original File:</strong> <a id="modal-task-original-link" href="#" target="_blank"></a></p>
+                <div id="modal-task-preview" style="display:none; margin:10px 0; text-align:center;">
+                    <img id="modal-task-preview-img" src="" style="max-width:100%; max-height:300px; border:1px solid #ddd; border-radius:4px;">
+                </div>
                 <hr>
+                <h4>🔴 Live Processing Log</h4>
+                <div id="modal-processing-log" style="background:#0f172a; color:#e2e8f0; font-family:monospace; font-size:0.8rem; padding:10px; border-radius:4px; height:200px; overflow-y:auto; margin-bottom:15px;">
+                    <em style="color:#94a3b8;">Waiting for logs...</em>
+                </div>
                 <h4>Result Log</h4>
-                <textarea id="modal-task-log" style="width:100%; height: 250px; background:#1e293b; color:#38bdf8; font-family:monospace; font-size:0.85rem; padding:10px; border-radius:4px; border:none;" readonly></textarea>
+                <textarea id="modal-task-log" style="width:100%; height: 200px; background:#1e293b; color:#38bdf8; font-family:monospace; font-size:0.85rem; padding:10px; border-radius:4px; border:none;" readonly></textarea>
                 <hr>
                 <h4>Task Config</h4>
                 <pre id="modal-task-config" style="background:#f1f5f9; padding:10px; border-radius:4px; font-size:0.85rem; overflow-x:auto;"></pre>
