@@ -12,6 +12,8 @@ import logging
 import shutil
 import zipfile
 import subprocess
+import functools
+import hmac
 from flask import Flask, jsonify, render_template, request, session, redirect, url_for, send_from_directory, Blueprint, send_file
 
 # Setup server logging
@@ -70,7 +72,26 @@ def init_sqlite():
     conn.commit()
     conn.close()
 
-init_sqlite()
+# Decide whether to use Postgres for queue (set USE_PG_QUEUE=1 in env to enable)
+USE_PG_QUEUE = os.environ.get('USE_PG_QUEUE', '0').lower() in ('1', 'true', 'yes')
+WORKER_API_TOKEN = os.environ.get('WORKER_API_TOKEN', '').strip()
+qpg = None
+if USE_PG_QUEUE:
+    try:
+        import sys, importlib
+        server_dir = os.path.dirname(__file__)
+        if server_dir not in sys.path:
+            sys.path.insert(0, server_dir)
+        qpg = importlib.import_module('queue_pg')
+        try:
+            qpg.init_pg()
+        except Exception:
+            pass
+    except Exception as e:
+        qpg = None
+        logging.warning(f'Postgres queue adapter import failed: {e}')
+else:
+    init_sqlite()
 
 # Ensure display_id exists for older schemas and assign sequential IDs based on created_at.
 def migrate_queue_display_ids():
@@ -102,12 +123,21 @@ def migrate_queue_display_ids():
     except Exception as e:
         logging.warning(f'display_id migration skipped: {e}')
 
-migrate_queue_display_ids()
+if not USE_PG_QUEUE:
+    migrate_queue_display_ids()
 
 def _append_task_log(task_id, message, level='info'):
     """Append a timestamped log entry to a queue task's processing_log JSON array."""
     import json, datetime
     try:
+        # If Postgres adapter is enabled, use it
+        if USE_PG_QUEUE and qpg:
+            try:
+                qpg.append_task_log(task_id, message, level)
+                return
+            except Exception:
+                pass
+
         conn = sqlite3.connect(SQLITE_DB)
         c = conn.cursor()
         c.execute("SELECT processing_log FROM ai_task_queue WHERE task_id = ?", (task_id,))
@@ -214,10 +244,11 @@ def load_config():
 def get_db_connection():
     config = load_config()
     return pymysql.connect(
-        host=config.get('db_host', '127.0.0.1'),
-        user=config.get('db_user', 'koha_mfa'),
-        password=config.get('db_pass', 'HdOd?^`UVa`c3^W~'),
-        database=config.get('db_name', 'koha_mfa'),
+        host=os.environ.get('KOHA_DB_HOST') or config.get('db_host', '127.0.0.1'),
+        user=os.environ.get('KOHA_DB_USER') or config.get('db_user', 'koha_mfa'),
+        password=os.environ.get('KOHA_DB_PASSWORD') or config.get('db_pass', 'HdOd?^`UVa`c3^W~'),
+        database=os.environ.get('KOHA_DB_NAME') or config.get('db_name', 'koha_mfa'),
+        port=int(os.environ.get('KOHA_DB_PORT', config.get('db_port', 3306))),
         charset='utf8mb4',
         cursorclass=pymysql.cursors.DictCursor
     )
@@ -511,6 +542,23 @@ def login_required(f):
     wrap.__name__ = f.__name__
     return wrap
 
+
+def worker_api_required(f):
+    """Authenticate machine-to-machine queue requests with a shared token."""
+    @functools.wraps(f)
+    def wrap(*args, **kwargs):
+        if not WORKER_API_TOKEN:
+            return jsonify({"success": False, "error": "Worker API is not configured"}), 503
+        supplied = request.headers.get('X-Worker-Token', '')
+        if not supplied:
+            auth = request.headers.get('Authorization', '')
+            if auth.lower().startswith('bearer '):
+                supplied = auth[7:].strip()
+        if not hmac.compare_digest(supplied, WORKER_API_TOKEN):
+            return jsonify({"success": False, "error": "Unauthorized worker request"}), 401
+        return f(*args, **kwargs)
+    return wrap
+
 # --- ROUTES ---
 @app.route('/')
 @login_required
@@ -579,15 +627,21 @@ def stats():
                     complete += 1
 
             # Queue stats
-            sq_conn = sqlite3.connect(SQLITE_DB)
-            sq_conn.row_factory = sqlite3.Row
-            sq_c = sq_conn.cursor()
-            sq_c.execute("SELECT status, COUNT(*) as c FROM ai_task_queue GROUP BY status")
             q_stats = {'pending': 0, 'processing': 0, 'completed': 0, 'error': 0}
-            for r in sq_c.fetchall():
-                if r['status'] in q_stats:
-                    q_stats[r['status']] = r['c']
-            sq_conn.close()
+            if USE_PG_QUEUE and qpg:
+                counts = qpg.get_counts()
+                for k, v in counts.items():
+                    if k in q_stats:
+                        q_stats[k] = v
+            else:
+                sq_conn = sqlite3.connect(SQLITE_DB)
+                sq_conn.row_factory = sqlite3.Row
+                sq_c = sq_conn.cursor()
+                sq_c.execute("SELECT status, COUNT(*) as c FROM ai_task_queue GROUP BY status")
+                for r in sq_c.fetchall():
+                    if r['status'] in q_stats:
+                        q_stats[r['status']] = r['c']
+                sq_conn.close()
 
             return jsonify({
                 "total": total,
@@ -1017,17 +1071,33 @@ def start_fixer_batch():
                 rows = cursor.fetchall()
             
             count = 0
-            sq_conn = sqlite3.connect(SQLITE_DB)
-            sq_c = sq_conn.cursor()
-            for row in rows:
-                task_id = "FIX_" + str(uuid.uuid4())
-                sq_c.execute('SELECT COALESCE(MAX(display_id), 0) + 1 FROM ai_task_queue')
-                next_display_id = sq_c.fetchone()[0]
-                sq_c.execute("INSERT INTO ai_task_queue (task_id, display_id, type, status, biblionumber, title, author, images) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                             (task_id, next_display_id, 'db_fix', 'pending', row['biblionumber'], row['title'], row['author'], '[]'))
-                count += 1
-            sq_conn.commit()
-            sq_conn.close()
+            if USE_PG_QUEUE and qpg:
+                for row in rows:
+                    task_id = "FIX_" + str(uuid.uuid4())
+                    next_display_id = qpg.get_next_display_id()
+                    qpg.insert_task({
+                        'task_id': task_id,
+                        'display_id': next_display_id,
+                        'type': 'db_fix',
+                        'status': 'pending',
+                        'biblionumber': row['biblionumber'],
+                        'title': row['title'],
+                        'author': row['author'],
+                        'images': '[]'
+                    })
+                    count += 1
+            else:
+                sq_conn = sqlite3.connect(SQLITE_DB)
+                sq_c = sq_conn.cursor()
+                for row in rows:
+                    task_id = "FIX_" + str(uuid.uuid4())
+                    sq_c.execute('SELECT COALESCE(MAX(display_id), 0) + 1 FROM ai_task_queue')
+                    next_display_id = sq_c.fetchone()[0]
+                    sq_c.execute("INSERT INTO ai_task_queue (task_id, display_id, type, status, biblionumber, title, author, images) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                 (task_id, next_display_id, 'db_fix', 'pending', row['biblionumber'], row['title'], row['author'], '[]'))
+                    count += 1
+                sq_conn.commit()
+                sq_conn.close()
             return jsonify({"success": True, "tasks_added": count})
     finally:
         conn.close()
@@ -1259,18 +1329,22 @@ def get_dashboard_stats():
     finally:
         conn.close()
         
-    sq_conn = sqlite3.connect(SQLITE_DB)
-    sq_conn.row_factory = sqlite3.Row
-    sq_c = sq_conn.cursor()
-    
-    sq_c.execute("SELECT status, COUNT(*) as c FROM ai_task_queue WHERE created_at >= datetime('now', '-1 day') GROUP BY status")
-    rows = sq_c.fetchall()
     q_stats = {'pending': 0, 'processing': 0, 'completed': 0, 'error': 0}
-    for r in rows:
-        if r['status'] in q_stats:
-            q_stats[r['status']] = r['c']
-            
-    sq_conn.close()
+    if USE_PG_QUEUE and qpg:
+        counts = qpg.get_counts_since("now() - interval '1 day'")
+        for k, v in counts.items():
+            if k in q_stats:
+                q_stats[k] = v
+    else:
+        sq_conn = sqlite3.connect(SQLITE_DB)
+        sq_conn.row_factory = sqlite3.Row
+        sq_c = sq_conn.cursor()
+        sq_c.execute("SELECT status, COUNT(*) as c FROM ai_task_queue WHERE created_at >= datetime('now', '-1 day') GROUP BY status")
+        rows = sq_c.fetchall()
+        for r in rows:
+            if r['status'] in q_stats:
+                q_stats[r['status']] = r['c']
+        sq_conn.close()
     
     queue_count = q_stats['pending'] + q_stats['processing']
     
@@ -1315,26 +1389,40 @@ def batch_queue():
         return jsonify({"error": "No items selected"}), 400
         
     import uuid, sqlite3, json
-    sq_conn = sqlite3.connect(SQLITE_DB)
-    sq_c = sq_conn.cursor()
-    
     count = 0
     task_config = json.dumps({"fix_type": fix_type, "ai_model": ai_model})
-    
     task_ids = []
-    for bib in biblionumbers:
-        sq_c.execute("SELECT task_id FROM ai_task_queue WHERE type='db_fix' AND biblionumber=? AND status IN ('pending', 'processing')", (bib,))
-        if not sq_c.fetchone():
-            task_id = str(uuid.uuid4())
-            sq_c.execute('SELECT COALESCE(MAX(display_id), 0) + 1 FROM ai_task_queue')
-            next_display_id = sq_c.fetchone()[0]
-            sq_c.execute("INSERT INTO ai_task_queue (task_id, display_id, type, status, biblionumber, images, task_config) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                         (task_id, next_display_id, 'db_fix', 'pending', bib, '', task_config))
-            task_ids.append(task_id)
-            count += 1
-
-    sq_conn.commit()
-    sq_conn.close()
+    if USE_PG_QUEUE and qpg:
+        for bib in biblionumbers:
+            if not qpg.exists_task_for_bib(bib):
+                task_id = str(uuid.uuid4())
+                next_display_id = qpg.get_next_display_id()
+                qpg.insert_task({
+                    'task_id': task_id,
+                    'display_id': next_display_id,
+                    'type': 'db_fix',
+                    'status': 'pending',
+                    'biblionumber': bib,
+                    'images': '',
+                    'task_config': task_config
+                })
+                task_ids.append(task_id)
+                count += 1
+    else:
+        sq_conn = sqlite3.connect(SQLITE_DB)
+        sq_c = sq_conn.cursor()
+        for bib in biblionumbers:
+            sq_c.execute("SELECT task_id FROM ai_task_queue WHERE type='db_fix' AND biblionumber=? AND status IN ('pending', 'processing')", (bib,))
+            if not sq_c.fetchone():
+                task_id = str(uuid.uuid4())
+                sq_c.execute('SELECT COALESCE(MAX(display_id), 0) + 1 FROM ai_task_queue')
+                next_display_id = sq_c.fetchone()[0]
+                sq_c.execute("INSERT INTO ai_task_queue (task_id, display_id, type, status, biblionumber, images, task_config) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                             (task_id, next_display_id, 'db_fix', 'pending', bib, '', task_config))
+                task_ids.append(task_id)
+                count += 1
+        sq_conn.commit()
+        sq_conn.close()
 
     return jsonify({"success": True, "queued": count, "task_ids": task_ids})
 
@@ -1348,6 +1436,8 @@ def get_queue_task(task_id):
     sq_c.execute("SELECT * FROM ai_task_queue WHERE task_id = ?", (task_id,))
     row = sq_c.fetchone()
     sq_conn.close()
+
+
     if not row:
         return jsonify({"success": False, "error": "Task not found"}), 404
 
@@ -1382,6 +1472,40 @@ def get_queue_task(task_id):
             "processing_log": processing_log
         }
     })
+
+@app.route('/api/internal/health', methods=['GET'])
+def internal_health():
+    """Non-auth health check for DB and queue. Intended for debugging only."""
+    status = {"db": False, "queue": "unknown", "details": []}
+    try:
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('SELECT 1')
+                cursor.fetchone()
+            status['db'] = True
+        finally:
+            conn.close()
+    except Exception as e:
+        status['details'].append(f"DB error: {e}")
+
+    try:
+        if USE_PG_QUEUE and qpg:
+            status['queue'] = 'postgres'
+            status['counts'] = qpg.get_counts()
+        else:
+            sq = sqlite3.connect(SQLITE_DB, timeout=5)
+            try:
+                cur = sq.cursor()
+                cur.execute("SELECT COUNT(*) FROM ai_task_queue")
+                status['counts'] = {'total': cur.fetchone()[0]}
+                status['queue'] = 'sqlite'
+            finally:
+                sq.close()
+    except Exception as e:
+        status['details'].append(f"Queue error: {e}")
+
+    return jsonify(status)
 
 # --- IMAGE UPLOADS ---
 
@@ -1644,28 +1768,35 @@ def process_ocr():
     paths = data.get('paths', [])
     if not paths: return jsonify({"error": "No files selected"}), 400
     
-    import sqlite3
-    conn = sqlite3.connect(SQLITE_DB)
+    task_ids = []
     try:
-        task_ids = []
-        cursor = conn.cursor()
         for p in paths:
             target_file = resolve_source_path(p)
             if not os.path.exists(target_file): continue
             if not target_file.lower().endswith(('.jpg', '.jpeg', '.png')): continue
-            
             task_id = f"ocr_{uuid.uuid4().hex[:12]}"
-            cursor.execute(
-                "INSERT INTO ai_task_queue (task_id, type, status, images, result_data) VALUES (?, ?, ?, ?, ?)",
-                (task_id, 'source_ocr', 'pending', target_file, '')
-            )
+            if USE_PG_QUEUE and qpg:
+                qpg.insert_task({
+                    'task_id': task_id,
+                    'type': 'source_ocr',
+                    'status': 'pending',
+                    'images': json.dumps([target_file]),
+                    'result_data': ''
+                })
+            else:
+                import sqlite3
+                conn = sqlite3.connect(SQLITE_DB)
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT INTO ai_task_queue (task_id, type, status, images, result_data) VALUES (?, ?, ?, ?, ?)",
+                    (task_id, 'source_ocr', 'pending', target_file, '')
+                )
+                conn.commit()
+                conn.close()
             task_ids.append(task_id)
-        conn.commit()
         return jsonify({"success": True, "task_ids": task_ids})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
 
 @app.route('/api/source/process_ai', methods=['POST'])
 @login_required
@@ -1674,28 +1805,35 @@ def process_ai_metadata():
     paths = data.get('paths', [])
     if not paths: return jsonify({"error": "No files selected"}), 400
     
-    import sqlite3
-    conn = sqlite3.connect(SQLITE_DB)
+    task_ids = []
     try:
-        task_ids = []
-        cursor = conn.cursor()
         for p in paths:
             target_file = resolve_source_path(p)
             if not os.path.exists(target_file): continue
             if not target_file.lower().endswith(('.txt', '.ocr.txt')): continue
-            
             task_id = f"meta_{uuid.uuid4().hex[:12]}"
-            cursor.execute(
-                "INSERT INTO ai_task_queue (task_id, type, status, images, result_data) VALUES (?, ?, ?, ?, ?)",
-                (task_id, 'source_meta', 'pending', target_file, '')
-            )
+            if USE_PG_QUEUE and qpg:
+                qpg.insert_task({
+                    'task_id': task_id,
+                    'type': 'source_meta',
+                    'status': 'pending',
+                    'images': json.dumps([target_file]),
+                    'result_data': ''
+                })
+            else:
+                import sqlite3
+                conn = sqlite3.connect(SQLITE_DB)
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT INTO ai_task_queue (task_id, type, status, images, result_data) VALUES (?, ?, ?, ?, ?)",
+                    (task_id, 'source_meta', 'pending', target_file, '')
+                )
+                conn.commit()
+                conn.close()
             task_ids.append(task_id)
-        conn.commit()
         return jsonify({"success": True, "task_ids": task_ids})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
 
 @app.route('/api/source/generate_mrc', methods=['POST'])
 @login_required
@@ -1703,21 +1841,31 @@ def generate_mrc():
     data = request.json
     paths = data.get('paths', [])
     if not paths: return jsonify({"error": "No files selected"}), 400
-    import sqlite3
-    conn = sqlite3.connect(SQLITE_DB)
+    task_ids = []
     try:
-        task_ids = []
-        cursor = conn.cursor()
         for p in paths:
             target_file = resolve_source_path(p)
             if not os.path.exists(target_file) or not target_file.lower().endswith('.json'): continue
             task_id = f"mrc_{uuid.uuid4().hex[:12]}"
-            cursor.execute("INSERT INTO ai_task_queue (task_id, type, status, images, result_data) VALUES (?, ?, ?, ?, ?)",
-                           (task_id, 'source_mrc', 'pending', target_file, ''))
+            if USE_PG_QUEUE and qpg:
+                qpg.insert_task({
+                    'task_id': task_id,
+                    'type': 'source_mrc',
+                    'status': 'pending',
+                    'images': json.dumps([target_file]),
+                    'result_data': ''
+                })
+            else:
+                import sqlite3
+                conn = sqlite3.connect(SQLITE_DB)
+                cursor = conn.cursor()
+                cursor.execute("INSERT INTO ai_task_queue (task_id, type, status, images, result_data) VALUES (?, ?, ?, ?, ?)",
+                               (task_id, 'source_mrc', 'pending', target_file, ''))
+                conn.commit()
+                conn.close()
             task_ids.append(task_id)
-        conn.commit()
         return jsonify({"success": True, "task_ids": task_ids})
-    finally: conn.close()
+    finally: pass
 
 @app.route('/api/source/stage_koha', methods=['POST'])
 @login_required
@@ -1725,21 +1873,31 @@ def stage_koha():
     data = request.json
     paths = data.get('paths', [])
     if not paths: return jsonify({"error": "No files selected"}), 400
-    import sqlite3
-    conn = sqlite3.connect(SQLITE_DB)
+    task_ids = []
     try:
-        task_ids = []
-        cursor = conn.cursor()
         for p in paths:
             target_file = resolve_source_path(p)
             if not os.path.exists(target_file) or not target_file.lower().endswith('.mrc'): continue
             task_id = f"stage_{uuid.uuid4().hex[:12]}"
-            cursor.execute("INSERT INTO ai_task_queue (task_id, type, status, images, result_data) VALUES (?, ?, ?, ?, ?)",
-                           (task_id, 'source_stage', 'pending', target_file, ''))
+            if USE_PG_QUEUE and qpg:
+                qpg.insert_task({
+                    'task_id': task_id,
+                    'type': 'source_stage',
+                    'status': 'pending',
+                    'images': json.dumps([target_file]),
+                    'result_data': ''
+                })
+            else:
+                import sqlite3
+                conn = sqlite3.connect(SQLITE_DB)
+                cursor = conn.cursor()
+                cursor.execute("INSERT INTO ai_task_queue (task_id, type, status, images, result_data) VALUES (?, ?, ?, ?, ?)",
+                               (task_id, 'source_stage', 'pending', target_file, ''))
+                conn.commit()
+                conn.close()
             task_ids.append(task_id)
-        conn.commit()
         return jsonify({"success": True, "task_ids": task_ids})
-    finally: conn.close()
+    finally: pass
 
 
 # --- SOURCE FILE MANAGER ---
@@ -1896,25 +2054,32 @@ def source_download_zip():
 # --- IMAGE TOOLS ---
 
 def _image_tool_queue(paths, tool, params=None):
-    import sqlite3
-    conn = sqlite3.connect(SQLITE_DB)
-    try:
-        task_ids = []
-        cursor = conn.cursor()
-        params_json = json.dumps(params or {})
-        for p in paths:
-            target = resolve_source_path(p)
-            if not os.path.exists(target): continue
-            task_id = f"img_{tool}_{uuid.uuid4().hex[:12]}"
+    task_ids = []
+    params_json = json.dumps(params or {})
+    for p in paths:
+        target = resolve_source_path(p)
+        if not os.path.exists(target): continue
+        task_id = f"img_{tool}_{uuid.uuid4().hex[:12]}"
+        if USE_PG_QUEUE and qpg:
+            qpg.insert_task({
+                'task_id': task_id,
+                'type': f'image_{tool}',
+                'status': 'pending',
+                'images': json.dumps([target]),
+                'result_data': params_json
+            })
+        else:
+            import sqlite3
+            conn = sqlite3.connect(SQLITE_DB)
+            cursor = conn.cursor()
             cursor.execute(
                 "INSERT INTO ai_task_queue (task_id, type, status, images, result_data) VALUES (?, ?, ?, ?, ?)",
                 (task_id, f'image_{tool}', 'pending', target, params_json)
             )
-            task_ids.append(task_id)
-        conn.commit()
-        return task_ids
-    finally:
-        conn.close()
+            conn.commit()
+            conn.close()
+        task_ids.append(task_id)
+    return task_ids
 
 @app.route('/api/source/image_tool', methods=['POST'])
 @login_required
@@ -2007,62 +2172,97 @@ def source_image_tool():
 
 def _queue_pipeline_tasks(image_paths, run_ocr=True, run_meta=True, run_mrc=True):
     """Queue OCR, metadata, and MRC tasks for a list of image paths."""
-    import sqlite3
-    conn = sqlite3.connect(SQLITE_DB)
-    try:
-        cursor = conn.cursor()
-        queued = {'ocr': [], 'meta': [], 'mrc': []}
-        ocr_targets = []
-        for p in image_paths:
-            target = resolve_source_path(p)
-            if not os.path.exists(target) or not target.lower().endswith(('.jpg', '.jpeg', '.png')):
-                continue
-            ocr_targets.append(target)
+    queued = {'ocr': [], 'meta': [], 'mrc': []}
+    ocr_targets = []
+    for p in image_paths:
+        target = resolve_source_path(p)
+        if not os.path.exists(target) or not target.lower().endswith(('.jpg', '.jpeg', '.png')):
+            continue
+        ocr_targets.append(target)
 
-        if run_ocr and ocr_targets:
-            for target in ocr_targets:
-                task_id = f"ocr_{uuid.uuid4().hex[:12]}"
+    if run_ocr and ocr_targets:
+        for target in ocr_targets:
+            task_id = f"ocr_{uuid.uuid4().hex[:12]}"
+            if USE_PG_QUEUE and qpg:
+                qpg.insert_task({
+                    'task_id': task_id,
+                    'type': 'source_ocr',
+                    'status': 'pending',
+                    'images': json.dumps([target]),
+                    'result_data': ''
+                })
+            else:
+                import sqlite3
+                conn = sqlite3.connect(SQLITE_DB)
+                cursor = conn.cursor()
                 cursor.execute(
                     "INSERT INTO ai_task_queue (task_id, type, status, images, result_data) VALUES (?, ?, ?, ?, ?)",
                     (task_id, 'source_ocr', 'pending', target, '')
                 )
-                queued['ocr'].append(task_id)
+                conn.commit()
+                conn.close()
+            queued['ocr'].append(task_id)
 
-        if run_meta and ocr_targets:
-            for target in ocr_targets:
-                txt_path = target + '.ocr.txt'
-                task_id = f"meta_{uuid.uuid4().hex[:12]}"
+    if run_meta and ocr_targets:
+        for target in ocr_targets:
+            txt_path = target + '.ocr.txt'
+            task_id = f"meta_{uuid.uuid4().hex[:12]}"
+            img_val = txt_path if os.path.exists(txt_path) else target
+            if USE_PG_QUEUE and qpg:
+                qpg.insert_task({
+                    'task_id': task_id,
+                    'type': 'source_meta',
+                    'status': 'pending',
+                    'images': json.dumps([img_val]),
+                    'result_data': ''
+                })
+            else:
+                import sqlite3
+                conn = sqlite3.connect(SQLITE_DB)
+                cursor = conn.cursor()
                 cursor.execute(
                     "INSERT INTO ai_task_queue (task_id, type, status, images, result_data) VALUES (?, ?, ?, ?, ?)",
-                    (task_id, 'source_meta', 'pending', txt_path if os.path.exists(txt_path) else target, '')
+                    (task_id, 'source_meta', 'pending', img_val, '')
                 )
-                queued['meta'].append(task_id)
+                conn.commit()
+                conn.close()
+            queued['meta'].append(task_id)
 
-        if run_mrc:
-            # Look for existing JSON files paired with these images/folders
-            json_candidates = set()
-            for p in image_paths:
-                base = os.path.splitext(resolve_source_path(p))[0]
-                for ext in ['.json']:
-                    candidate = base + ext
-                    if os.path.exists(candidate):
-                        json_candidates.add(candidate)
-                folder = os.path.dirname(resolve_source_path(p))
-                for f in os.listdir(folder) if os.path.isdir(folder) else []:
-                    if f.lower().endswith('.json'):
-                        json_candidates.add(os.path.join(folder, f))
-            for jpath in json_candidates:
-                task_id = f"mrc_{uuid.uuid4().hex[:12]}"
+    if run_mrc:
+        # Look for existing JSON files paired with these images/folders
+        json_candidates = set()
+        for p in image_paths:
+            base = os.path.splitext(resolve_source_path(p))[0]
+            for ext in ['.json']:
+                candidate = base + ext
+                if os.path.exists(candidate):
+                    json_candidates.add(candidate)
+            folder = os.path.dirname(resolve_source_path(p))
+            for f in os.listdir(folder) if os.path.isdir(folder) else []:
+                if f.lower().endswith('.json'):
+                    json_candidates.add(os.path.join(folder, f))
+        for jpath in json_candidates:
+            task_id = f"mrc_{uuid.uuid4().hex[:12]}"
+            if USE_PG_QUEUE and qpg:
+                qpg.insert_task({
+                    'task_id': task_id,
+                    'type': 'source_mrc',
+                    'status': 'pending',
+                    'images': json.dumps([jpath]),
+                    'result_data': ''
+                })
+            else:
+                import sqlite3
+                conn = sqlite3.connect(SQLITE_DB)
+                cursor = conn.cursor()
                 cursor.execute(
                     "INSERT INTO ai_task_queue (task_id, type, status, images, result_data) VALUES (?, ?, ?, ?, ?)",
                     (task_id, 'source_mrc', 'pending', jpath, '')
                 )
-                queued['mrc'].append(task_id)
-
-        conn.commit()
-        return queued
-    finally:
-        conn.close()
+                conn.commit()
+                conn.close()
+            queued['mrc'].append(task_id)
+    return queued
 
 
 @app.route('/api/source/organize', methods=['POST'])
@@ -2459,31 +2659,50 @@ def trigger_ai():
     import json
     
     task_id = "UP_" + str(uuid.uuid4())
-    sq_conn = sqlite3.connect(SQLITE_DB)
-    sq_c = sq_conn.cursor()
-    sq_c.execute("INSERT INTO ai_task_queue (task_id, type, status, title, images) VALUES (?, ?, ?, ?, ?)", 
-                 (task_id, 'upload', 'pending', barcode, json.dumps(images)))
-    sq_conn.commit()
-    sq_conn.close()
+    if USE_PG_QUEUE and qpg:
+        qpg.insert_task({
+            'task_id': task_id,
+            'type': 'upload',
+            'status': 'pending',
+            'title': barcode,
+            'images': json.dumps(images)
+        })
+    else:
+        sq_conn = sqlite3.connect(SQLITE_DB)
+        sq_c = sq_conn.cursor()
+        sq_c.execute("INSERT INTO ai_task_queue (task_id, type, status, title, images) VALUES (?, ?, ?, ?, ?)", 
+                     (task_id, 'upload', 'pending', barcode, json.dumps(images)))
+        sq_conn.commit()
+        sq_conn.close()
     
     return jsonify({"task_id": task_id})
 
 @app.route('/api/queue/status', methods=['GET'])
 @login_required
 def queue_status():
-    sq_conn = sqlite3.connect(SQLITE_DB)
-    sq_conn.row_factory = sqlite3.Row
-    sq_c = sq_conn.cursor()
-    sq_c.execute("SELECT * FROM ai_task_queue ORDER BY created_at DESC LIMIT 100")
-    rows = sq_c.fetchall()
-    sq_conn.close()
-    
+    if USE_PG_QUEUE and qpg:
+        rows = qpg.list_tasks(limit=100)
+    else:
+        sq_conn = sqlite3.connect(SQLITE_DB)
+        sq_conn.row_factory = sqlite3.Row
+        sq_c = sq_conn.cursor()
+        sq_c.execute("SELECT * FROM ai_task_queue ORDER BY created_at DESC LIMIT 100")
+        rows = sq_c.fetchall()
+        sq_conn.close()
+
     import json
     queue = {}
     for r in rows:
-        result_data = json.loads(r['result_data']) if r['result_data'] else None
-        imgs = json.loads(r['images']) if r['images'] else []
-        queue[r['task_id']] = {
+        # r may be dict-like from RealDictCursor when using Postgres
+        if isinstance(r, dict):
+            result_data = json.loads(r.get('result_data')) if r.get('result_data') else None
+            imgs = json.loads(r.get('images')) if r.get('images') else []
+            task_id = r.get('task_id')
+        else:
+            result_data = json.loads(r['result_data']) if r['result_data'] else None
+            imgs = json.loads(r['images']) if r['images'] else []
+            task_id = r['task_id']
+        queue[task_id] = {
             "status": r['status'],
             "type": r['type'],
             "biblionumber": r['biblionumber'],
@@ -2498,11 +2717,14 @@ def queue_status():
 @app.route('/api/queue/requeue/<task_id>', methods=['POST'])
 @login_required
 def requeue_task(task_id):
-    sq_conn = sqlite3.connect(SQLITE_DB)
-    sq_c = sq_conn.cursor()
-    sq_c.execute("UPDATE ai_task_queue SET status = 'pending', result_data = NULL WHERE task_id = ?", (task_id,))
-    sq_conn.commit()
-    sq_conn.close()
+    if USE_PG_QUEUE and qpg:
+        qpg.update_task_status(task_id, 'pending', result_data=None)
+    else:
+        sq_conn = sqlite3.connect(SQLITE_DB)
+        sq_c = sq_conn.cursor()
+        sq_c.execute("UPDATE ai_task_queue SET status = 'pending', result_data = NULL WHERE task_id = ?", (task_id,))
+        sq_conn.commit()
+        sq_conn.close()
     return jsonify({"success": True})
 
 
@@ -2515,33 +2737,37 @@ def get_queue_list():
     status = request.args.get('status', 'all')
     q_bib = request.args.get('q_bib', '').strip()
     
-    import sqlite3, datetime
-    sq_conn = sqlite3.connect(SQLITE_DB)
-    sq_conn.row_factory = sqlite3.Row
-    sq_c = sq_conn.cursor()
-    
-    query = "SELECT * FROM ai_task_queue WHERE 1=1"
-    params = []
-    
-    if status != 'all':
-        query += " AND status = ?"
-        params.append(status)
-        
-    if q_bib:
-        query += " AND biblionumber LIKE ?"
-        params.append(f"%{q_bib}%")
-        
-    # Count total
-    sq_c.execute(f"SELECT COUNT(*) as c FROM ({query})", params)
-    total = sq_c.fetchone()['c']
-    
-    # Get paginated
-    query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
-    params.extend([limit, offset])
-    
-    sq_c.execute(query, params)
-    rows = sq_c.fetchall()
-    sq_conn.close()
+    # Use Postgres adapter when available for pagination and filtering
+    if USE_PG_QUEUE and qpg:
+        rows, total = qpg.query_tasks(status=status, q_bib=q_bib, limit=limit, offset=offset)
+    else:
+        import sqlite3, datetime
+        sq_conn = sqlite3.connect(SQLITE_DB)
+        sq_conn.row_factory = sqlite3.Row
+        sq_c = sq_conn.cursor()
+
+        query = "SELECT * FROM ai_task_queue WHERE 1=1"
+        params = []
+
+        if status != 'all':
+            query += " AND status = ?"
+            params.append(status)
+
+        if q_bib:
+            query += " AND biblionumber LIKE ?"
+            params.append(f"%{q_bib}%")
+
+        # Count total
+        sq_c.execute(f"SELECT COUNT(*) as c FROM ({query})", params)
+        total = sq_c.fetchone()['c']
+
+        # Get paginated
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        sq_c.execute(query, params)
+        rows = sq_c.fetchall()
+        sq_conn.close()
     
     data = []
     for r in rows:
@@ -2571,6 +2797,67 @@ def get_queue_list():
         "page": page,
         "limit": limit
     })
+
+
+def _worker_task_payload(row):
+    """Return a JSON-safe queue row for distributed workers."""
+    if not row:
+        return None
+    payload = dict(row)
+    for key in ('images', 'task_config', 'result_data', 'processing_log'):
+        value = payload.get(key)
+        if isinstance(value, str):
+            try:
+                payload[key] = json.loads(value) if value else ([] if key == 'images' else {})
+            except Exception:
+                pass
+    return payload
+
+
+@app.route('/api/worker/claim', methods=['POST'])
+@worker_api_required
+def worker_claim():
+    """Atomically claim one queue task for a remote worker instance."""
+    if not (USE_PG_QUEUE and qpg):
+        return jsonify({"success": False, "error": "Distributed workers require USE_PG_QUEUE=1"}), 503
+    task = qpg.claim_next_task()
+    if not task:
+        return jsonify({"success": True, "task": None})
+    _append_task_log(task['task_id'], "Claimed by distributed worker")
+    return jsonify({"success": True, "task": _worker_task_payload(task)})
+
+
+@app.route('/api/worker/task/<task_id>', methods=['GET'])
+@worker_api_required
+def worker_task(task_id):
+    if not (USE_PG_QUEUE and qpg):
+        return jsonify({"success": False, "error": "Distributed workers require USE_PG_QUEUE=1"}), 503
+    task = qpg.select_task(task_id)
+    if not task:
+        return jsonify({"success": False, "error": "Task not found"}), 404
+    return jsonify({"success": True, "task": _worker_task_payload(task)})
+
+
+@app.route('/api/worker/task/<task_id>', methods=['POST'])
+@worker_api_required
+def worker_update_task(task_id):
+    if not (USE_PG_QUEUE and qpg):
+        return jsonify({"success": False, "error": "Distributed workers require USE_PG_QUEUE=1"}), 503
+    data = request.get_json(silent=True) or {}
+    status = data.get('status')
+    if status not in ('completed', 'error', 'pending'):
+        return jsonify({"success": False, "error": "status must be completed, error, or pending"}), 400
+    if not qpg.select_task(task_id):
+        return jsonify({"success": False, "error": "Task not found"}), 404
+    result_data = data.get('result_data', {})
+    if not isinstance(result_data, str):
+        result_data = json.dumps(result_data)
+    fields = {'result_data': result_data}
+    if status == 'completed':
+        fields['completed_at'] = __import__('datetime').datetime.now()
+    qpg.update_task_status(task_id, status, **fields)
+    _append_task_log(task_id, f"Updated by distributed worker: {status}")
+    return jsonify({"success": True, "task_id": task_id, "status": status})
 
 
 
@@ -2610,30 +2897,48 @@ def _insert_task(task_spec):
     """Insert a task row and return its task_id."""
     import uuid, sqlite3, json
     task_id = str(uuid.uuid4())
-    sq_conn = sqlite3.connect(SQLITE_DB)
-    sq_c = sq_conn.cursor()
-    sq_c.execute('SELECT COALESCE(MAX(display_id), 0) + 1 FROM ai_task_queue')
-    next_display_id = sq_c.fetchone()[0]
-    sq_c.execute("""
-        INSERT INTO ai_task_queue (task_id, display_id, type, status, biblionumber, title, author, images, task_config)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        task_id, next_display_id,
-        task_spec.get('type', 'source_meta'),
-        task_spec.get('status', 'pending'),
-        task_spec.get('biblionumber'),
-        str(task_spec.get('title', '')),
-        str(task_spec.get('author', '')),
-        json.dumps(task_spec.get('images', [])),
-        json.dumps(task_spec.get('task_config', {}))
-    ))
-    sq_conn.commit()
-    sq_conn.close()
-    return task_id
+    if USE_PG_QUEUE and qpg:
+        next_display_id = qpg.get_next_display_id()
+        qpg.insert_task({
+            'task_id': task_id,
+            'display_id': next_display_id,
+            'type': task_spec.get('type', 'source_meta'),
+            'status': task_spec.get('status', 'pending'),
+            'biblionumber': task_spec.get('biblionumber'),
+            'title': str(task_spec.get('title', '')),
+            'author': str(task_spec.get('author', '')),
+            'images': json.dumps(task_spec.get('images', [])),
+            'task_config': json.dumps(task_spec.get('task_config', {}))
+        })
+        return task_id
+    else:
+        sq_conn = sqlite3.connect(SQLITE_DB)
+        sq_c = sq_conn.cursor()
+        sq_c.execute('SELECT COALESCE(MAX(display_id), 0) + 1 FROM ai_task_queue')
+        next_display_id = sq_c.fetchone()[0]
+        sq_c.execute("""
+            INSERT INTO ai_task_queue (task_id, display_id, type, status, biblionumber, title, author, images, task_config)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            task_id, next_display_id,
+            task_spec.get('type', 'source_meta'),
+            task_spec.get('status', 'pending'),
+            task_spec.get('biblionumber'),
+            str(task_spec.get('title', '')),
+            str(task_spec.get('author', '')),
+            json.dumps(task_spec.get('images', [])),
+            json.dumps(task_spec.get('task_config', {}))
+        ))
+        sq_conn.commit()
+        sq_conn.close()
+        return task_id
 
 
 def _fetch_task(task_id):
     import sqlite3, json
+    if USE_PG_QUEUE and qpg:
+        row = qpg.select_task(task_id)
+        return dict(row) if row else None
     sq_conn = sqlite3.connect(SQLITE_DB)
     sq_conn.row_factory = sqlite3.Row
     sq_c = sq_conn.cursor()
@@ -2687,11 +2992,15 @@ def process_immediate():
     task_row = _fetch_task(task_id)
 
     # Mark as processing and run immediately in a background thread
-    sq_conn = sqlite3.connect(SQLITE_DB)
-    sq_c = sq_conn.cursor()
-    sq_c.execute("UPDATE ai_task_queue SET status = 'processing', started_at = CURRENT_TIMESTAMP WHERE task_id = ?", (task_id,))
-    sq_conn.commit()
-    sq_conn.close()
+    import datetime
+    if USE_PG_QUEUE and qpg:
+        qpg.update_task_status(task_id, 'processing', started_at=datetime.datetime.now())
+    else:
+        sq_conn = sqlite3.connect(SQLITE_DB)
+        sq_c = sq_conn.cursor()
+        sq_c.execute("UPDATE ai_task_queue SET status = 'processing', started_at = CURRENT_TIMESTAMP WHERE task_id = ?", (task_id,))
+        sq_conn.commit()
+        sq_conn.close()
     _append_task_log(task_id, f"Immediate processing started (timeout={timeout_seconds}s)")
 
     _run_task_in_thread(task_row)
@@ -2751,24 +3060,43 @@ def process_import_rows():
     if not rows:
         return jsonify({"success": False, "error": "No rows provided"}), 400
 
-    sq_conn = sqlite3.connect(SQLITE_DB)
-    sq_c = sq_conn.cursor()
     task_ids = []
-    for row in rows[:1000]:  # cap for safety
-        task_id = str(uuid.uuid4())
-        sq_c.execute('SELECT COALESCE(MAX(display_id), 0) + 1 FROM ai_task_queue')
-        next_display_id = sq_c.fetchone()[0]
-        sq_c.execute("""
-            INSERT INTO ai_task_queue (task_id, display_id, type, status, biblionumber, title, author, images, task_config)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            task_id, next_display_id, 'source_meta', 'pending', None,
-            str(row.get('title', '')), str(row.get('author', '')), '[]',
-            json.dumps({"ai_model": ai_model, "strategy": strategy, "row_data": row})
-        ))
-        task_ids.append(task_id)
-    sq_conn.commit()
-    sq_conn.close()
+    if USE_PG_QUEUE and qpg:
+        for row in rows[:1000]:
+            task_id = str(uuid.uuid4())
+            next_display_id = qpg.get_next_display_id()
+            qpg.insert_task({
+                'task_id': task_id,
+                'display_id': next_display_id,
+                'type': 'source_meta',
+                'status': 'pending',
+                'biblionumber': None,
+                'title': str(row.get('title', '')),
+                'author': str(row.get('author', '')),
+                'images': '[]',
+                'task_config': json.dumps({"ai_model": ai_model, "strategy": strategy, "row_data": row})
+            })
+            task_ids.append(task_id)
+    else:
+        sq_conn = sqlite3.connect(SQLITE_DB)
+        sq_c = sq_conn.cursor()
+        for row in rows[:1000]:  # cap for safety
+            task_id = str(uuid.uuid4())
+            sq_c.execute('SELECT COALESCE(MAX(display_id), 0) + 1 FROM ai_task_queue')
+            next_display_id = sq_c.fetchone()[0]
+            sq_c.execute("""
+                INSERT INTO ai_task_queue (task_id, display_id, type, status, biblionumber, title, author, images, task_config)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                task_id, next_display_id, 'source_meta', 'pending', None,
+                str(row.get('title', '')), str(row.get('author', '')), '[]',
+                json.dumps({"ai_model": ai_model, "strategy": strategy, "row_data": row})
+            ))
+            task_ids.append(task_id)
+        sq_conn.commit()
+        sq_conn.close()
+
+    queue_on_timeout = data.get('queue_on_timeout', True)
 
     if not immediate:
         return jsonify({"success": True, "queued": len(task_ids), "task_ids": task_ids})
@@ -2784,11 +3112,15 @@ def process_import_rows():
         if time.time() - start >= timeout_seconds:
             break
         # Mark processing
-        sq_conn = sqlite3.connect(SQLITE_DB)
-        sq_c = sq_conn.cursor()
-        sq_c.execute("UPDATE ai_task_queue SET status = 'processing', started_at = CURRENT_TIMESTAMP WHERE task_id = ?", (task_id,))
-        sq_conn.commit()
-        sq_conn.close()
+        import datetime
+        if USE_PG_QUEUE and qpg:
+            qpg.update_task_status(task_id, 'processing', started_at=datetime.datetime.now())
+        else:
+            sq_conn = sqlite3.connect(SQLITE_DB)
+            sq_c = sq_conn.cursor()
+            sq_c.execute("UPDATE ai_task_queue SET status = 'processing', started_at = CURRENT_TIMESTAMP WHERE task_id = ?", (task_id,))
+            sq_conn.commit()
+            sq_conn.close()
         task_row = _fetch_task(task_id)
         _run_task_in_thread(task_row)
 
@@ -2801,6 +3133,27 @@ def process_import_rows():
         elif final_task and final_task['status'] == 'error':
             errors += 1
 
+    if remaining and not queue_on_timeout:
+        # User chose not to queue remaining tasks; remove them so they can be retried later
+        sq_conn = sqlite3.connect(SQLITE_DB)
+        sq_c = sq_conn.cursor()
+        placeholders = ','.join('?' * len(remaining))
+        sq_c.execute(f"DELETE FROM ai_task_queue WHERE task_id IN ({placeholders})", remaining)
+        sq_conn.commit()
+        sq_conn.close()
+        return jsonify({
+            "success": True,
+            "finished": False,
+            "total": len(task_ids),
+            "completed": completed,
+            "errors": errors,
+            "queued": 0,
+            "remaining": len(remaining),
+            "processed_count": completed + errors,
+            "task_ids": [t for t in task_ids if t not in remaining],
+            "message": f"Processed {completed} immediately, {errors} errors, {len(remaining)} not queued."
+        })
+
     return jsonify({
         "success": True,
         "finished": len(remaining) == 0,
@@ -2808,6 +3161,8 @@ def process_import_rows():
         "completed": completed,
         "errors": errors,
         "queued": len(remaining),
+        "remaining": len(remaining),
+        "processed_count": completed + errors,
         "task_ids": task_ids,
         "message": f"Processed {completed} immediately, {errors} errors, {len(remaining)} queued."
     })
@@ -2820,6 +3175,11 @@ def _check_stalled_tasks(timeout_seconds=300):
     Uses started_at (set when a worker claims the task), falling back to created_at."""
     import datetime
     try:
+        if USE_PG_QUEUE and qpg:
+            # Let Postgres handle with a single update
+            since = (datetime.datetime.now() - datetime.timedelta(seconds=timeout_seconds))
+            qpg.update_task_status_for_timeout(since)
+            return
         conn = sqlite3.connect(SQLITE_DB)
         c = conn.cursor()
         since = (datetime.datetime.now() - datetime.timedelta(seconds=timeout_seconds)).isoformat()
@@ -2847,6 +3207,15 @@ def task_claim_loop():
     while True:
         try:
             _check_stalled_tasks(timeout_seconds=300)
+
+            if USE_PG_QUEUE and qpg:
+                task = qpg.claim_next_task()
+                if task:
+                    _append_task_log(task['task_id'], f"Claimed by dispatcher, type={task['type']}, biblionumber={task['biblionumber']}")
+                    _task_queue.put(dict(task))
+                else:
+                    time.sleep(1)
+                continue
 
             sq_conn = sqlite3.connect(SQLITE_DB, timeout=30, isolation_level='IMMEDIATE')
             sq_conn.row_factory = sqlite3.Row
@@ -3069,22 +3438,28 @@ def run_ai_task(task_row):
             finally:
                 conn.close()
 
-        # Update SQLite
-        sq_conn2 = sqlite3.connect(SQLITE_DB)
-        sq_c2 = sq_conn2.cursor()
-        sq_c2.execute("UPDATE ai_task_queue SET status = 'completed', result_data = ?, completed_at = CURRENT_TIMESTAMP WHERE task_id = ?", (json.dumps(result_data), task_id))
-        sq_conn2.commit()
-        sq_conn2.close()
+        # Update queue
+        if USE_PG_QUEUE and qpg:
+            qpg.update_task_status(task_id, 'completed', result_data=json.dumps(result_data), completed_at=__import__('datetime').datetime.now())
+        else:
+            sq_conn2 = sqlite3.connect(SQLITE_DB)
+            sq_c2 = sq_conn2.cursor()
+            sq_c2.execute("UPDATE ai_task_queue SET status = 'completed', result_data = ?, completed_at = CURRENT_TIMESTAMP WHERE task_id = ?", (json.dumps(result_data), task_id))
+            sq_conn2.commit()
+            sq_conn2.close()
         task_log("Task completed successfully")
         logging.info(f"Task {task_id} completed.")
 
     except Exception as e:
         task_log(f"Task failed: {e}", level='error')
-        sq_conn3 = sqlite3.connect(SQLITE_DB)
-        sq_c3 = sq_conn3.cursor()
-        sq_c3.execute("UPDATE ai_task_queue SET status = 'error', result_data = ? WHERE task_id = ?", (json.dumps({"error": str(e)}), task_id))
-        sq_conn3.commit()
-        sq_conn3.close()
+        if USE_PG_QUEUE and qpg:
+            qpg.update_task_status(task_id, 'error', result_data=json.dumps({"error": str(e)}))
+        else:
+            sq_conn3 = sqlite3.connect(SQLITE_DB)
+            sq_c3 = sq_conn3.cursor()
+            sq_c3.execute("UPDATE ai_task_queue SET status = 'error', result_data = ? WHERE task_id = ?", (json.dumps({"error": str(e)}), task_id))
+            sq_conn3.commit()
+            sq_conn3.close()
         logging.error(f"Task {task_id} failed: {e}")
 
 
@@ -3330,6 +3705,9 @@ def _background_batch_retry():
     """Periodically retry pending tasks that have been waiting too long."""
     import datetime
     try:
+        if USE_PG_QUEUE and qpg:
+            # Postgres adapter: rely on DB-side queries or external maintenance for retries
+            return
         conn = sqlite3.connect(SQLITE_DB)
         c = conn.cursor()
         # Requeue tasks stuck in error for more than 5 minutes and originally pending for more than 10 minutes
@@ -3465,18 +3843,24 @@ def source_worker_loop():
                         if process.returncode != 0:
                             raise Exception(f"Stage failed. Check log: {log_file}")
                     
-                    sq_conn2 = sqlite3.connect(SQLITE_DB)
-                    sq_c2 = sq_conn2.cursor()
-                    sq_c2.execute("UPDATE ai_task_queue SET status = 'completed', result_data = ? WHERE task_id = ?", (json.dumps(result_data), task_id))
-                    sq_conn2.commit()
-                    sq_conn2.close()
+                    if USE_PG_QUEUE and qpg:
+                        qpg.update_task_status(task_id, 'completed', result_data=json.dumps(result_data))
+                    else:
+                        sq_conn2 = sqlite3.connect(SQLITE_DB)
+                        sq_c2 = sq_conn2.cursor()
+                        sq_c2.execute("UPDATE ai_task_queue SET status = 'completed', result_data = ? WHERE task_id = ?", (json.dumps(result_data), task_id))
+                        sq_conn2.commit()
+                        sq_conn2.close()
                     
                 except Exception as e:
-                    sq_conn3 = sqlite3.connect(SQLITE_DB)
-                    sq_c3 = sq_conn3.cursor()
-                    sq_c3.execute("UPDATE ai_task_queue SET status = 'error', result_data = ? WHERE task_id = ?", (json.dumps({"error": str(e)}), task_id))
-                    sq_conn3.commit()
-                    sq_conn3.close()
+                    if USE_PG_QUEUE and qpg:
+                        qpg.update_task_status(task_id, 'error', result_data=json.dumps({"error": str(e)}))
+                    else:
+                        sq_conn3 = sqlite3.connect(SQLITE_DB)
+                        sq_c3 = sq_conn3.cursor()
+                        sq_c3.execute("UPDATE ai_task_queue SET status = 'error', result_data = ? WHERE task_id = ?", (json.dumps({"error": str(e)}), task_id))
+                        sq_conn3.commit()
+                        sq_conn3.close()
             else:
                 sq_conn.close()
         except Exception as ex:
