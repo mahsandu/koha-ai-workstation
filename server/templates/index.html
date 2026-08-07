@@ -868,6 +868,7 @@
                         <button class="btn btn-outline btn-small" onclick="actionImageTool('optimize')">✨ Optimize</button>
                         <button class="btn btn-outline btn-small" onclick="actionImageTool('deskew')">📐 De-skew</button>
                         <button class="btn btn-outline btn-small" onclick="actionImageTool('smart_rotate')">🔄 Auto Rotate</button>
+                        <button class="btn btn-small" style="background:#2563eb; color:#fff;" onclick="actionImageTool('straighten')">📱 Auto Straighten</button>
                         <button class="btn btn-outline btn-small" onclick="actionRotatePrompt()">↻ Manual Rotate</button>
                         <button class="btn btn-outline btn-small" onclick="actionImageTool('colorize')">🎨 Colorize</button>
                         <button class="btn btn-outline btn-small" onclick="actionImageTool('autofix')">🔧 Auto Fix</button>
@@ -3282,6 +3283,39 @@ async function submitBatchFix() {
             } catch(e) { /* ignore polling errors */ }
         }
 
+        function renderImmediateProcessResult(data, isError=false) {
+            const body = document.getElementById('immediate-process-body');
+            const results = data.results || [];
+            let resultHtml = '';
+            if(results.length === 1 && results[0].steps && results[0].steps.length) {
+                const r = results[0];
+                const originalUrl = '/koha_editor/api/source/file?path=' + encodeURIComponent(r.path) + '&_t=' + Date.now();
+                // Show a detailed straighten-style report
+                resultHtml = `
+                    <p style="text-align:center; color:${isError ? '#dc2626' : '#15803d'}; font-weight:bold;">${isError ? '❌ Processing finished with errors' : '✅ Processing completed!'}</p>
+                    <div style="display:flex; gap:10px; justify-content:center; margin:10px 0; flex-wrap:wrap;">
+                        <div style="text-align:center;">
+                            <div style="font-size:0.75rem; color:#6b7280; margin-bottom:4px;">Original</div>
+                            <img src="/koha_editor/api/source/file?path=${encodeURIComponent(r.path.replace(/\.([^.]+)$/, '_original.$1'))}&_t=${Date.now()}" style="max-width:220px; max-height:180px; border:1px solid #ddd; border-radius:4px;">
+                        </div>
+                        <div style="text-align:center;">
+                            <div style="font-size:0.75rem; color:#6b7280; margin-bottom:4px;">Result</div>
+                            <img src="${originalUrl}" style="max-width:220px; max-height:180px; border:1px solid #ddd; border-radius:4px;">
+                        </div>
+                    </div>
+                    <div style="background:#0f172a; color:#e2e8f0; font-family:monospace; font-size:0.8rem; padding:10px; border-radius:4px; max-height:160px; overflow-y:auto;">
+                        ${r.steps.map(s => `<div><span style="color:#64748b;">[${s.step}]</span> ${escapeHtml(s.message)}</div>`).join('')}
+                    </div>
+                `;
+            } else {
+                resultHtml = `<p style="text-align:center; color:${isError ? '#dc2626' : '#15803d'}; font-weight:bold;">${isError ? '❌ Processing finished with errors' : '✅ Processing completed!'}</p>`;
+                if(results.length > 1) {
+                    resultHtml += `<p style="text-align:center; color:#6b7280;">Processed ${data.processed || 0}/${data.image_count || results.length} images.</p>`;
+                }
+            }
+            body.innerHTML = resultHtml;
+        }
+
         async function startImmediateProcess({ endpoint, payload, title, onSuccess, onQueue, onError, timeoutSeconds = 45 }) {
             immediateProcessTaskId = null;
             immediateProcessQueueFallback = null;
@@ -3308,14 +3342,13 @@ async function submitBatchFix() {
                     // Completed synchronously
                     document.getElementById('immediate-process-bar').style.width = '100%';
                     if(data.status === 'completed') {
-                        document.getElementById('immediate-process-body').innerHTML = `<p style="color:#15803d; text-align:center; font-weight:bold;">✅ Processing completed!</p>`;
+                        renderImmediateProcessResult(data);
                         document.getElementById('btn-immediate-close').style.display = 'inline-block';
                         if(onSuccess) onSuccess(data);
                     } else {
-                        const err = (data.error || 'Task failed');
-                        document.getElementById('immediate-process-body').innerHTML = `<p style="color:red; text-align:center; font-weight:bold;">❌ ${escapeHtml(err)}</p>`;
+                        renderImmediateProcessResult(data, true);
                         document.getElementById('btn-immediate-close').style.display = 'inline-block';
-                        if(onError) onError(err);
+                        if(onError) onError(data.error || 'Task failed');
                     }
                     return;
                 }
@@ -3458,6 +3491,7 @@ async function submitBatchFix() {
                     <button class="btn btn-outline btn-small" onclick="sourceModalActionImageTool('optimize')">✨ Optimize</button>
                     <button class="btn btn-outline btn-small" onclick="sourceModalActionImageTool('deskew')">📐 De-skew</button>
                     <button class="btn btn-outline btn-small" onclick="sourceModalActionImageTool('smart_rotate')">🔄 Auto Rotate</button>
+                    <button class="btn btn-small" style="background:#2563eb; color:#fff;" onclick="sourceModalActionImageTool('straighten')">📱 Auto Straighten</button>
                     <button class="btn btn-outline btn-small" onclick="sourceModalActionRotatePrompt()">↻ Manual Rotate</button>
                     <button class="btn btn-outline btn-small" onclick="sourceModalActionImageTool('colorize')">🎨 Colorize</button>
                     <button class="btn btn-outline btn-small" onclick="sourceModalActionImageTool('autofix')">🔧 Auto Fix</button>

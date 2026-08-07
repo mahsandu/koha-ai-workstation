@@ -1926,7 +1926,7 @@ def source_image_tool():
     scope = data.get('scope', 'selected')  # selected | folder
     immediate = data.get('immediate', False)
     timeout_seconds = min(int(data.get('timeout_seconds', 45)), 120)
-    if tool not in ['crop', 'optimize', 'deskew', 'colorize', 'autofix', 'rotate', 'smart_crop', 'smart_rotate']:
+    if tool not in ['crop', 'optimize', 'deskew', 'colorize', 'autofix', 'rotate', 'smart_crop', 'smart_rotate', 'straighten']:
         return jsonify({"error": "Invalid tool"}), 400
 
     try:
@@ -1959,6 +1959,8 @@ def source_image_tool():
             base_tool = 'rotate'
             params = params or {}
             params['mode'] = 'smart'
+        elif tool == 'straighten':
+            base_tool = 'straighten'
 
         if not immediate:
             task_ids = _image_tool_queue(paths, base_tool, params)
@@ -1973,8 +1975,11 @@ def source_image_tool():
             if time.time() - start >= timeout_seconds:
                 break
             target = resolve_source_path(p)
-            result = process_image_tool(target, base_tool, params)
-            results.append({"path": p, "success": result.get("success", False), "error": result.get("error")})
+            if base_tool == 'straighten':
+                result = process_image_straighten(target)
+            else:
+                result = process_image_tool(target, base_tool, params)
+            results.append({"path": p, "success": result.get("success", False), "error": result.get("error"), "steps": result.get("steps", [])})
             if not result.get("success"):
                 errors += 1
         processed = len(results)
@@ -3178,6 +3183,63 @@ def _detect_text_angle(img):
         return 0
 
 
+def process_image_straighten(input_path, progress_callback=None):
+    """Full mobile-photo cleanup: detect skew, rotate, then smart crop.
+
+    Calls progress_callback(step, message) after each phase.
+    Returns dict with success, angle, bbox, output path and per-step info.
+    """
+    import os, time
+    from PIL import Image
+    result = {"success": True, "steps": []}
+
+    def log(step, msg):
+        result["steps"].append({"step": step, "message": msg, "ts": time.time()})
+        if progress_callback:
+            try:
+                progress_callback(step, msg)
+            except Exception:
+                pass
+
+    try:
+        _ensure_original(input_path)
+        log("original", "Original image preserved.")
+
+        img = Image.open(input_path).convert('RGB')
+        w, h = img.size
+        log("load", f"Loaded image {w}x{h}.")
+
+        angle = _detect_skew(img)
+        log("deskew", f"Detected skew angle: {angle:.2f}°.")
+        if abs(angle) > 0.1:
+            img = img.rotate(-angle, expand=True, fillcolor=(255, 255, 255))
+            log("rotate", f"Rotated image by {-angle:.2f}°.")
+        else:
+            log("rotate", "Skew negligible; no rotation needed.")
+
+        bbox = _smart_crop_bbox(img)
+        if bbox:
+            left, top, right, bottom = bbox
+            log("crop", f"Smart crop bounding box: ({left}, {top}, {right}, {bottom}).")
+            img = img.crop(bbox)
+            log("crop", f"Cropped image to {img.size[0]}x{img.size[1]}.")
+        else:
+            log("crop", "No content bounding box detected; skipping crop.")
+
+        img.save(input_path)
+        log("save", "Saved straightened image.")
+
+        result["angle"] = angle
+        result["bbox"] = bbox
+        result["output"] = os.path.relpath(input_path, SOURCE_DIR).replace('\\', '/')
+        return result
+    except Exception as e:
+        result["success"] = False
+        result["error"] = str(e)
+        log("error", f"Straighten failed: {e}")
+        return result
+
+
 def process_image_tool(input_path, tool, params=None):
     import os, shutil, json
     from PIL import Image, ImageEnhance, ImageFilter
@@ -3220,6 +3282,9 @@ def process_image_tool(input_path, tool, params=None):
             if abs(angle) > 0.1:
                 img = img.rotate(-angle, expand=True, fillcolor=(255, 255, 255))
             img.save(input_path)
+        elif tool == 'straighten':
+            result = process_image_straighten(input_path)
+            return result
         elif tool == 'colorize':
             img = Image.open(input_path).convert('RGB')
             enhancer = ImageEnhance.Color(img)
@@ -3313,7 +3378,10 @@ def source_worker_loop():
                             params = json.loads(task['result_data'] or '{}')
                         except Exception:
                             params = {}
-                        result_data = process_image_tool(target_file, tool, params)
+                        if tool == 'straighten':
+                            result_data = process_image_straighten(target_file)
+                        else:
+                            result_data = process_image_tool(target_file, tool, params)
                     elif t_type == 'source_ocr':
                         with open(target_file, 'rb') as f:
                             encoded_string = base64.b64encode(f.read()).decode('utf-8')
