@@ -154,10 +154,14 @@
         .status-ready { background: #d1fae5; color: #059669; }
 
         /* Browser */
-        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 25px; }
-        .stat-card { background: white; padding: 20px; border-radius: 8px; border: 1px solid var(--border-color); box-shadow: 0 2px 4px rgba(0,0,0,0.02); text-align: center; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 25px; }
+        .stat-card { background: white; padding: 20px; border-radius: 8px; border: 1px solid var(--border-color); box-shadow: 0 2px 4px rgba(0,0,0,0.02); text-align: center; cursor: pointer; transition: all 0.2s ease; position: relative; }
+        .stat-card:hover { border-color: var(--primary); box-shadow: 0 6px 12px rgba(192, 38, 211, 0.12); transform: translateY(-2px); }
+        .stat-card:active { transform: translateY(0); }
         .stat-card h3 { margin: 0; color: var(--text-light); font-size: 1rem; }
         .stat-card .val { font-size: 2rem; font-weight: 700; color: var(--primary); margin-top: 5px; }
+        .stat-card::after { content: '→'; position: absolute; top: 10px; right: 12px; font-size: 0.85rem; color: #d1d5db; transition: color 0.2s; }
+        .stat-card:hover::after { color: var(--primary); }
         .issue-link { color: var(--text-main); text-decoration: none; cursor: pointer; transition: color 0.2s; }
         .issue-link:hover { color: var(--primary); text-decoration: underline; }
         .table-container { background: white; border-radius: 8px; border: 1px solid var(--border-color); overflow-x: auto; }
@@ -444,6 +448,46 @@
         @media (max-width: 1200px) {
             .editor-full-layout { grid-template-columns: 1fr; }
         }
+        @media (max-width: 768px) {
+            .navbar { height: auto; flex-direction: column; padding: 10px; gap: 10px; }
+            .nav-tabs { width: 100%; overflow-x: auto; justify-content: flex-start; height: auto; margin-bottom: 0; gap: 2px; }
+            .nav-tab { padding: 10px 12px; font-size: 0.9rem; height: auto; white-space: nowrap; border-bottom: none; border-radius: 6px 6px 0 0; }
+            .nav-tab.active { background: var(--primary); color: white; border-bottom-color: transparent; }
+            .user-info { width: 100%; justify-content: space-between; }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+            .stat-card { padding: 12px 8px; }
+            .stat-card .val, .stat-card div[id^="dash-"] { font-size: 1.4rem !important; }
+            .stat-card h3 { font-size: 0.75rem !important; }
+            .editor-top-nav { flex-direction: column; gap: 10px; align-items: stretch; }
+            .editor-top-nav > div { flex-wrap: wrap; }
+            .editor-top-nav .btn { flex: 1; min-width: 100px; }
+            .editor-column { min-width: 0; }
+            .preview-tabs { flex-wrap: wrap; }
+            .preview-tab { flex: 1; min-width: 70px; font-size: 0.8rem; padding: 6px; }
+            .modal-content { width: 95% !important; max-width: 95% !important; margin: 10px; }
+            .table-container { overflow-x: auto; }
+            table { min-width: 600px; }
+            .panel { padding: 15px; }
+            h2 { font-size: 1.3rem; }
+            h3 { font-size: 1.1rem; }
+            .btn { padding: 8px 12px; font-size: 0.85rem; }
+            .btn-small { padding: 5px 8px; font-size: 0.75rem; }
+            input, select, textarea { font-size: 16px; }
+            .marc-field { flex-direction: column; align-items: stretch; gap: 8px; }
+            .item-row { flex-direction: column; align-items: stretch; }
+            .item-row > div { width: 100% !important; }
+            .quick-fields { display: flex; flex-wrap: wrap; gap: 5px; }
+            .quick-fields .btn { flex: 1; min-width: 70px; padding: 5px; font-size: 0.7rem; }
+            .book-card { width: 100%; min-height: auto; padding: 15px; }
+            .spine-label-preview { height: 120px; }
+            .barcode-preview { width: 100%; }
+        }
+        @media (max-width: 480px) {
+            .stats-grid { grid-template-columns: 1fr; }
+            .nav-tab { padding: 8px 10px; font-size: 0.8rem; }
+            .nav-brand { font-size: 1.3rem; }
+            .nav-brand svg { width: 24px; height: 24px; }
+        }
         @media print {
             body * { visibility: hidden; }
             #print-area, #print-area * { visibility: visible; }
@@ -544,25 +588,6 @@
                             <div id="prog-bar" style="height:100%; width:0%; background:var(--primary); transition:width 0.3s;"></div>
                         </div>
                     </div>
-                </div>
-            </div>
-            
-            <div class="ai-grid" style="grid-template-columns: 1fr 1fr;">
-                <div class="panel">
-                    <h2>Image Batch Upload</h2>
-                    <p style="font-size: 0.9rem; color: #64748b; margin-bottom: 15px;">Upload folders containing images of book covers. The AI will extract metadata automatically.</p>
-                    <div class="upload-area" onclick="document.getElementById('folder-upload').click()">
-                        <p>Click to Upload Folders</p>
-                        <input type="file" id="folder-upload" webkitdirectory directory multiple style="display: none;" onchange="handleUpload(event)">
-                    </div>
-                    <div class="folder-list" id="folder-list"></div>
-                </div>
-                
-                <div class="panel">
-                    <h2>AI Fixer Engine</h2>
-                    <p style="font-size: 0.9rem; color: #64748b; margin-bottom: 15px;">Scan the Koha database for broken records (missing Authors, Publisher info, etc) and use DeepSeek AI to automatically fix them via OpenLibrary cross-referencing.</p>
-                    <button class="btn" style="width: 100%; padding: 15px; font-size: 1.1rem; background: var(--primary);" onclick="startFixerBatch()">Start Full AI Fixer Batch</button>
-                    <div id="fixer-status" style="margin-top: 15px; font-weight: bold; text-align: center; color: var(--primary);"></div>
                 </div>
             </div>
         </div>
@@ -705,7 +730,7 @@
                             <button class="btn btn-small" id="btn-save-full" onclick="saveFullRecord()">Save Record</button>
                         </div>
                         <div style="font-size:0.85rem; color:#6b7280; margin-bottom:8px;">Quick essential fields:</div>
-                        <div class="essential-fields">
+                        <div class="essential-fields quick-fields">
                             <button onclick="addEssentialField('020')">020 ISBN</button>
                             <button onclick="addEssentialField('022')">022 ISSN</button>
                             <button onclick="addEssentialField('082')">082 DDC</button>
